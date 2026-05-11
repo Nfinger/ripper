@@ -267,16 +267,18 @@ function parsePreflight(record: Record<string, unknown>, sourcePath: string): Pa
 
 
 function parseAgentReview(record: Record<string, unknown> | null, sourcePath: string): ParseResult<AgentReviewConfig> {
-  if (record === null) return { enabled: true, command: 'codex', model: null, timeout_seconds: 300 };
+  if (record === null) return { enabled: true, command: 'codex', model: null, timeout_seconds: 300, max_fix_attempts: 2 };
   const enabled = requiredBoolean(record, 'enabled', sourcePath, 'agent_review.enabled');
   if (enabled instanceof SupervisedProfileError) return enabled;
   const command = requiredString(record, 'command', sourcePath, 'agent_review.command');
   if (command instanceof SupervisedProfileError) return command;
   const timeout = requiredNumber(record, 'timeout_seconds', sourcePath, 'agent_review.timeout_seconds');
   if (timeout instanceof SupervisedProfileError) return timeout;
+  const maxFixAttemptsValue = record.max_fix_attempts ?? 2;
+  if (typeof maxFixAttemptsValue !== 'number' || !Number.isInteger(maxFixAttemptsValue) || maxFixAttemptsValue < 0) return invalid(sourcePath, 'agent_review.max_fix_attempts');
   const modelValue = record.model;
   if (modelValue !== null && typeof modelValue !== 'string') return invalid(sourcePath, 'agent_review.model');
-  return { enabled, command, model: modelValue, timeout_seconds: timeout };
+  return { enabled, command, model: modelValue, timeout_seconds: timeout, max_fix_attempts: maxFixAttemptsValue };
 }
 
 function parseVerification(record: Record<string, unknown> | null, sourcePath: string): ParseResult<VerificationConfig> {

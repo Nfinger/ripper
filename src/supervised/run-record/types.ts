@@ -9,6 +9,8 @@ export type RunStatus =
   | 'codex_running'
   | 'codex_completed'
   | 'code_review_running'
+  | 'review_remediation_running'
+  | 'review_remediation_completed'
   | 'code_review_completed'
   | 'verification_running'
   | 'verification_completed'

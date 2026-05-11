@@ -117,6 +117,8 @@ describe('loadSupervisedProfile', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error.message);
     expect(result.profile.agent.kind).toBe('codex');
+    expect(result.profile.agent_review.max_fix_attempts).toBe(2);
+    expect(result.profile.verification.enabled).toBe(false);
     expect(result.sourcePath).toBe(profilePath('valid', homeDir));
     expect(result.resolvedHash).toMatch(/^[a-f0-9]{64}$/);
   });
@@ -180,6 +182,17 @@ describe('loadSupervisedProfile', () => {
     if (result.ok) throw new Error('expected failure');
     expect(result.error.code).toBe('profile_field_invalid');
     expect(result.error.field).toBe('validation.commands.0.timeout_seconds');
+  });
+
+  it('validates agent_review.max_fix_attempts shape', async () => {
+    const homeDir = await writeProfile('bad', `${VALID_PROFILE}\nagent_review: { enabled: true, command: codex, model: gpt-5.5, timeout_seconds: 300, max_fix_attempts: -1 }\n`);
+
+    const result = await loadSupervisedProfile('bad', { homeDir });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error.code).toBe('profile_field_invalid');
+    expect(result.error.field).toBe('agent_review.max_fix_attempts');
   });
 
   it('canonicalizes absolute repo.path values', async () => {

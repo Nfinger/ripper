@@ -256,7 +256,7 @@ describe('runRealRun', () => {
     }));
   });
 
-  it('fails before validation when the independent review requests changes', async () => {
+  it('autonomously remediates review-requested changes, rechecks the diff, and re-runs review before validation', async () => {
     const { homeDir } = await setupHome({
       validationYaml: `validation:
   network: allowed
@@ -266,7 +266,38 @@ describe('runRealRun', () => {
       timeout_seconds: 90`,
     });
     const deps = clients({
-      reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: 'Blocking issue found\nREQUEST_CHANGES - bug found', exitCode: 0, timedOut: false as const })) },
+      reviewer: { run: vi.fn()
+        .mockResolvedValueOnce({ ok: true as const, finalText: 'Blocking issue found\nREQUEST_CHANGES - bug found', exitCode: 0, timedOut: false as const })
+        .mockResolvedValueOnce({ ok: true as const, finalText: 'Fixed now\nAPPROVED', exitCode: 0, timedOut: false as const }) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('succeeded');
+    expect(deps.codex.run).toHaveBeenCalledTimes(2);
+    expect(deps.reviewer.run).toHaveBeenCalledTimes(2);
+    expect(deps.git.newCommits).toHaveBeenCalledTimes(2);
+    const remediationPromptPath = (deps.codex.run as ReturnType<typeof vi.fn>).mock.calls[1][0].promptPath;
+    expect(remediationPromptPath).toContain('review-remediation-1-prompt.md');
+    expect(await readFile(remediationPromptPath, 'utf8')).toContain('REQUEST_CHANGES');
+    expect(await readFile(path.join(result.run.run_dir, 'review-remediation-1-final.md'), 'utf8')).toContain('done');
+    expect(deps.validation.run).toHaveBeenCalled();
+    expect(deps.github.createPullRequest).toHaveBeenCalled();
+  });
+
+  it('fails before validation after review remediation attempts are exhausted', async () => {
+    const { homeDir } = await setupHome({
+      validationYaml: `validation:
+  network: allowed
+  commands:
+    - name: unit-tests
+      argv: [pnpm, test]
+      timeout_seconds: 90`,
+    });
+    const deps = clients({
+      reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: 'Still broken\nREQUEST_CHANGES - bug found', exitCode: 0, timedOut: false as const })) },
     });
 
     const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
@@ -275,6 +306,8 @@ describe('runRealRun', () => {
     const run = await readRunById(homeDir, result.run.run_id);
     expect(run.status).toBe('failed');
     expect(run.reason).toBe('code_review_failed');
+    expect(deps.codex.run).toHaveBeenCalledTimes(3);
+    expect(deps.reviewer.run).toHaveBeenCalledTimes(3);
     expect(deps.validation.run).not.toHaveBeenCalled();
     expect(deps.github.createPullRequest).not.toHaveBeenCalled();
   });
@@ -291,9 +324,29 @@ describe('runRealRun', () => {
     const run = await readRunById(homeDir, result.run.run_id);
     expect(run.status).toBe('failed');
     expect(run.reason).toBe('code_review_failed');
+    expect(result.message).toContain('Agent review failed: code_review_failed');
+    expect(deps.linear.postComment).toHaveBeenCalledWith('i1', expect.stringContaining('code_review_failed'));
+    expect(deps.linear.postComment).not.toHaveBeenCalledWith('i1', expect.stringContaining('post_claim_unhandled_error'));
     const review = await readFile(path.join(result.run.run_dir, 'agent-review.md'), 'utf8');
     expect(review).toContain('[REDACTED_LOCAL_PATH]');
     expect(review).not.toContain('/Users/homebase/secret');
+  });
+
+  it('fails with code_review_failed without double-transitioning when reviewer returns a failed result', async () => {
+    const { homeDir } = await setupHome();
+    const deps = clients({
+      reviewer: { run: vi.fn(async () => ({ ok: false as const, reason: 'codex_unavailable' as const, exitCode: 1, timedOut: false as const, finalText: '' })) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).not.toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toBe('code_review_failed');
+    expect(result.message).toContain('Agent review failed: code_review_failed');
+    expect(deps.linear.postComment).toHaveBeenCalledWith('i1', expect.stringContaining('code_review_failed'));
+    expect(deps.linear.postComment).not.toHaveBeenCalledWith('i1', expect.stringContaining('post_claim_unhandled_error'));
   });
 
   it('terminalizes and comments when reviewer execution throws after entering code_review_running', async () => {

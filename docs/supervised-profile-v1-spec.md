@@ -172,6 +172,7 @@ agent_review:
   command: codex
   model: gpt-5.5
   timeout_seconds: 300
+  max_fix_attempts: 2
 
 prompt:
   include_repo_instruction_files:
@@ -183,6 +184,11 @@ prompt:
   extra_instructions: |
     Prefer small, reviewable changes.
     Do not introduce dependencies unless necessary.
+
+# agent_review is a hard gate after committed Codex changes and before smoke verification/validation.
+# The reviewer's final non-empty line must start with APPROVED or REQUEST_CHANGES.
+# REQUEST_CHANGES triggers up to max_fix_attempts autonomous implementation remediation attempts,
+# each followed by commit/change-policy checks and another independent review.
 
 preflight:
   require_main_checkout_clean: true
@@ -301,6 +307,8 @@ claimed
 codex_running
 codex_completed
 code_review_running
+review_remediation_running
+review_remediation_completed
 code_review_completed
 verification_running
 verification_completed
@@ -408,6 +416,16 @@ codex_completed
 
 code_review_running
   -> code_review_completed
+  -> review_remediation_running
+  -> failed
+
+review_remediation_running
+  -> review_remediation_completed
+  -> failed
+  -> timed_out
+
+review_remediation_completed
+  -> code_review_running
   -> failed
 
 code_review_completed

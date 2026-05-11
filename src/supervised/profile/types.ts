@@ -86,6 +86,7 @@ export interface AgentReviewConfig {
   command: string;
   model: string | null;
   timeout_seconds: number;
+  max_fix_attempts: number;
 }
 
 export interface VerificationConfig {
