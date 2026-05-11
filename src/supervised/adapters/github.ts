@@ -92,6 +92,7 @@ export class GitHubCliAdapter {
   }
 
   async waitForChecks(opts: WaitForChecksOptions): Promise<WaitForChecksResult> {
+    if (opts.intervalSeconds > 0) await sleep(opts.intervalSeconds * 1000);
     const deadline = Date.now() + opts.timeoutMs;
     let lastChecks: GitHubCheckRun[] = [];
 
