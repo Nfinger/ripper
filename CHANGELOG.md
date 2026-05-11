@@ -2,6 +2,31 @@
 
 All notable changes to Ripper/Symphony will be documented here.
 
+## v0.3.0 - 2026-05-11
+
+Verification evidence release for supervised UI/backend smoke runs.
+
+### Added
+
+- Configurable verification evidence collection for supervised runs.
+- Evidence artifact copying into run records while preserving relative paths.
+- Hosted verification evidence URL support with safe `http:`/`https:` filtering.
+- Evidence summaries for run artifacts and GitHub-visible PR comments.
+- GitHub adapter support for runner-owned PR comments after PR creation.
+- MarketSavvy UI profile lane support for required Playwright/video evidence.
+
+### Changed
+
+- Evidence comment posting failures after PR creation now terminalize as `verification_evidence_comment_failed` instead of being ignored.
+- Agent implementation prompts and worktree setup now more explicitly prevent agent-side pushes, PR creation, PR edits, and external handoff.
+- Standalone broad `secret_keyword` findings no longer block benign documentation unless accompanied by higher-confidence secret findings in the same file.
+
+### Security
+
+- Hosted evidence URLs are normalized and filtered before satisfying required evidence gates or appearing in summaries/comments.
+- Hosted evidence files are path-checked and removed after collection.
+- Evidence artifact matching is constrained to configured patterns and preserves path context to avoid collision/ambiguity.
+
 ## v0.2.0 - 2026-05-11
 
 Agent review, remediation, smoke verification, and repo-local project knowledge release.
