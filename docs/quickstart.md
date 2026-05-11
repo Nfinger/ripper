@@ -77,6 +77,8 @@ Prefer a specific low-risk issue for the first real run:
 symphony run <profile> --issue ABC-123
 ```
 
+A successful dogfood run should leave an auditable run record and a reviewable non-draft PR.
+
 Then verify:
 
 - a local run record was created
