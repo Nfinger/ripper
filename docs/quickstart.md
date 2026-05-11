@@ -87,6 +87,8 @@ Then verify:
 - required GitHub checks passed
 - the tracker issue received the expected handoff
 
+Successful dogfood runs should leave an auditable run record and a reviewable non-draft PR.
+
 ## 7. Recovery
 
 Inspect runs:
