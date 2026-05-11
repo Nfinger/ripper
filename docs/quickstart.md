@@ -71,7 +71,7 @@ A dry run should prove that the profile can load and that one eligible issue can
 
 ## 6. Run one controlled issue
 
-Prefer a specific low-risk issue for the first real run:
+Prefer a specific low-risk issue for the first real run, and use it to confirm the configured GitHub and tracker handoff behavior end to end:
 
 ```bash
 symphony run <profile> --issue ABC-123
