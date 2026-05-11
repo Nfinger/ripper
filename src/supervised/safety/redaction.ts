@@ -20,7 +20,7 @@ const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A
 const AUTH_BEARER = /(Authorization:\s*Bearer\s+)([^\s"'`]+)/giu;
 const CREDENTIAL_KV = /\b(api[_-]?key|token|secret|password)\b(\s*[:=]\s*)([^\s&"'`]+)/giu;
 const TOKEN_QUERY = /\b(token=)([^\s&"'`]+)/giu;
-const LOCAL_PATH = /(?:~\/[^\s)\]"']+|\/(?:Users|home|tmp|var|private|opt|Volumes)\/[^\s)\]"']+|[A-Za-z]:\\(?:Users|Temp|tmp)\\[^\s)\]"']+)/gu;
+const LOCAL_PATH = /(?:\/(?:Users|home|tmp|var|private|opt|Volumes)\/[^\s)\]"']+|[A-Za-z]:\\(?:Users|Temp|tmp)\\[^\s)\]"']+)/gu;
 const SECRET_KEYWORD = /\b(api[_-]?key|token|secret|password|Authorization:|Bearer\s+)\b/iu;
 
 export function redactText(input: string): string {
