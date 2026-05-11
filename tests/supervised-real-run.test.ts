@@ -12,7 +12,7 @@ import { loadSupervisedProfile } from '../src/supervised/profile/loader.js';
 
 const ISSUE: LinearIssue = { id: 'i1', key: 'ENG-1', title: 'Fix the thing', description: 'body', url: 'https://linear/ENG-1', status: 'Todo', labels: [], assigneeId: null, teamKey: 'ENG', projectName: null, comments: [] };
 
-async function setupHome(profileOverrides: { validationYaml?: string; prBodyMaxChars?: number; requiredChecksYaml?: string; failureStatus?: string | null } = {}): Promise<{ homeDir: string; repo: string }> {
+async function setupHome(profileOverrides: { validationYaml?: string; verificationYaml?: string; prBodyMaxChars?: number; requiredChecksYaml?: string; failureStatus?: string | null } = {}): Promise<{ homeDir: string; repo: string }> {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'symphony-real-run-home-'));
   const repo = await mkdtemp(path.join(tmpdir(), 'symphony-real-run-repo-'));
   await writeFile(path.join(repo, 'AGENTS.md'), 'repo guidance');
@@ -64,13 +64,14 @@ function clients(overrides: Partial<RealRunClients> = {}): RealRunClients {
     },
     codexReadiness: { checkAvailable: vi.fn(async () => ({ ok: true, version: '0.129.0' })) },
     codex: { run: vi.fn(async () => ({ ok: true as const, finalText: 'done', exitCode: 0, timedOut: false as const })) },
+    reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: 'Looks good.\n\nAPPROVED', exitCode: 0, timedOut: false as const })) },
     validation: { run: vi.fn(async () => ({ command: 'pnpm', args: ['test'], cwd: '/tmp/worktree', exitCode: 0, signal: null, timedOut: false, stdout: 'ok', stderr: '', durationMs: 12 })) },
     ...overrides,
   };
 }
 
 describe('runRealRun', () => {
-  it('claims one issue, runs Codex in a worktree, checks committed changes, then stops at codex_completed for manual inspection', async () => {
+  it('claims one issue, runs Codex, gets independent review, checks committed changes, then stops for manual inspection', async () => {
     const { homeDir, repo } = await setupHome();
     const deps = clients();
 
@@ -78,12 +79,14 @@ describe('runRealRun', () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.message).toContain('manual inspection required');
-    expect(result.run.status).toBe('codex_completed');
+    expect(result.run.status).toBe('code_review_completed');
     expect(result.run.mutating).toBe(true);
     expect(result.run.issue_key).toBe('ENG-1');
     expect(deps.linear.claimIssue).toHaveBeenCalledWith({ issueId: 'i1', profile: expect.any(Object), assigneeId: 'me' });
     expect(deps.git.createWorktree).toHaveBeenCalledWith(repo, expect.stringContaining(path.join(homeDir, '.symphony', 'worktrees')), 'symphony/p/ENG-1-implementation', 'origin/main');
     expect(deps.codex.run).toHaveBeenCalled();
+    expect(deps.reviewer.run).toHaveBeenCalled();
+    expect(await readFile(path.join(result.run.run_dir, 'agent-review.md'), 'utf8')).toContain('APPROVED');
     expect(deps.git.newCommits).toHaveBeenCalledWith(expect.stringContaining(path.join(homeDir, '.symphony', 'worktrees')), 'b'.repeat(40), 'HEAD');
     expect(await readFile(path.join(result.run.run_dir, 'diff-summary.md'), 'utf8')).toContain('ENG-1 implement thing');
     expect(await readFile(path.join(result.run.run_dir, 'result.md'), 'utf8')).toContain('Manual inspection required');
@@ -253,6 +256,117 @@ describe('runRealRun', () => {
     }));
   });
 
+  it('fails before validation when the independent review requests changes', async () => {
+    const { homeDir } = await setupHome({
+      validationYaml: `validation:
+  network: allowed
+  commands:
+    - name: unit-tests
+      argv: [pnpm, test]
+      timeout_seconds: 90`,
+    });
+    const deps = clients({
+      reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: 'Blocking issue found\nREQUEST_CHANGES - bug found', exitCode: 0, timedOut: false as const })) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).not.toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toBe('code_review_failed');
+    expect(deps.validation.run).not.toHaveBeenCalled();
+    expect(deps.github.createPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('enforces the reviewer final-line approval contract and redacts the shareable review artifact', async () => {
+    const { homeDir } = await setupHome();
+    const deps = clients({
+      reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: 'Reviewed local repro at /Users/homebase/secret/project\nEverything is NOT APPROVED', exitCode: 0, timedOut: false as const })) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).not.toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toBe('code_review_failed');
+    const review = await readFile(path.join(result.run.run_dir, 'agent-review.md'), 'utf8');
+    expect(review).toContain('[REDACTED_LOCAL_PATH]');
+    expect(review).not.toContain('/Users/homebase/secret');
+  });
+
+  it('terminalizes and comments when reviewer execution throws after entering code_review_running', async () => {
+    const { homeDir } = await setupHome();
+    const deps = clients({ reviewer: { run: vi.fn(async () => { throw new Error('reviewer exploded with /Users/homebase/secret'); }) } });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).not.toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toBe('post_claim_unhandled_error');
+    expect(deps.linear.postComment).toHaveBeenCalledWith('i1', expect.stringContaining('post_claim_unhandled_error'));
+    expect(await readFile(path.join(result.run.run_dir, 'result.md'), 'utf8')).not.toContain('/Users/homebase/secret');
+  });
+
+  it('runs configured UI Playwright MCP smoke verification before validation and PR handoff', async () => {
+    const { homeDir } = await setupHome({
+      verificationYaml: `verification:
+  enabled: true
+  mode: ui_playwright_mcp
+  commands:
+    - name: playwright-mcp-smoke
+      argv: [pnpm, exec, playwright, test, --project=chromium]
+      timeout_seconds: 120`,
+      validationYaml: `validation:
+  network: allowed
+  commands:
+    - name: unit-tests
+      argv: [pnpm, test]
+      timeout_seconds: 90`,
+    });
+    const deps = clients();
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).toBe(0);
+    expect(deps.validation.run).toHaveBeenNthCalledWith(1, expect.objectContaining({ command: 'pnpm', args: ['exec', 'playwright', 'test', '--project=chromium'] }));
+    expect(deps.validation.run).toHaveBeenNthCalledWith(2, expect.objectContaining({ command: 'pnpm', args: ['test'] }));
+    expect(await readFile(path.join(result.run.run_dir, 'verification-summary.md'), 'utf8')).toContain('Mode: ui_playwright_mcp');
+    const prBody = (deps.github.createPullRequest as ReturnType<typeof vi.fn>).mock.calls[0][0].body;
+    expect(prBody).toContain('Smoke Verification');
+  });
+  it('terminalizes and comments when smoke verification execution throws after entering verification_running', async () => {
+    const { homeDir } = await setupHome({
+      verificationYaml: `verification:
+  enabled: true
+  mode: backend_smoke
+  commands:
+    - name: backend-smoke
+      argv: [pnpm, smoke]
+      timeout_seconds: 120`,
+      validationYaml: `validation:
+  network: allowed
+  commands:
+    - name: unit-tests
+      argv: [pnpm, test]
+      timeout_seconds: 90`,
+    });
+    const deps = clients({ validation: { run: vi.fn(async () => { throw new Error('smoke exploded with /Users/homebase/secret'); }) } });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).not.toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toBe('post_claim_unhandled_error');
+    expect(deps.linear.postComment).toHaveBeenCalledWith('i1', expect.stringContaining('post_claim_unhandled_error'));
+    expect(deps.github.createPullRequest).not.toHaveBeenCalled();
+    expect(await readFile(path.join(result.run.run_dir, 'result.md'), 'utf8')).not.toContain('/Users/homebase/secret');
+  });
+
+
   it('enforces configured maximum PR body length before creating GitHub-visible content', async () => {
     const { homeDir } = await setupHome({
       prBodyMaxChars: 300,
@@ -387,6 +501,7 @@ describe('runRealRun', () => {
       timeout_seconds: 90`,
     });
     const statusPorcelain = vi.fn()
+      .mockResolvedValueOnce('')
       .mockResolvedValueOnce('')
       .mockResolvedValueOnce('')
       .mockResolvedValueOnce(' M generated.ts\n');
@@ -645,9 +760,10 @@ async function createResumeFixture(homeDir: string, status: 'pr_created' | 'ci_r
   return run.run_id;
 }
 
-function profileYaml(repo: string, opts: { validationYaml?: string; prBodyMaxChars?: number; requiredChecksYaml?: string; failureStatus?: string | null } = {}): string {
+function profileYaml(repo: string, opts: { validationYaml?: string; verificationYaml?: string; prBodyMaxChars?: number; requiredChecksYaml?: string; failureStatus?: string | null } = {}): string {
   const validationYaml = opts.validationYaml ?? 'validation: { network: allowed, commands: [] }';
   const requiredChecksYaml = opts.requiredChecksYaml ?? 'required_checks: { mode: github_required_checks, fallback: [] }';
+  const verificationYaml = opts.verificationYaml ?? 'verification: { enabled: false, mode: generic_smoke, commands: [] }';
   const failureStatus = opts.failureStatus === undefined || opts.failureStatus === null ? 'null' : JSON.stringify(opts.failureStatus);
   return `schema_version: 1
 name: p
@@ -670,8 +786,10 @@ linear:
   output_tail_max_lines: 80
   assignee: { mode: authenticated_user }
 agent: { kind: codex, command: codex, model: gpt-5.5, timeout_minutes: 60, allow_network: true, allow_web_lookup: true, allow_browser_automation: false }
+agent_review: { enabled: true, command: codex, model: gpt-5.5, timeout_seconds: 300 }
 prompt: { include_repo_instruction_files: [AGENTS.md], repo_instruction_max_chars: 20000, extra_instructions: null }
 preflight: { require_main_checkout_clean: true, require_main_checkout_on_base_branch: true, require_no_merge_or_rebase_in_progress: true, require_base_fetchable: true, require_target_branch_absent: true, require_github_auth: true, require_linear_auth: true, require_codex_available: true }
+${verificationYaml}
 ${validationYaml}
 change_policy: { allowed_paths: null, forbidden_paths: [], max_file_bytes: 1000000, allow_binary_files: false }
 git: { require_author_email_domains: [], forbid_author_emails: [], author: null }

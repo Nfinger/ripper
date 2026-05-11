@@ -167,6 +167,12 @@ agent:
   allow_web_lookup: true
   allow_browser_automation: false
 
+agent_review:
+  enabled: true
+  command: codex
+  model: gpt-5.5
+  timeout_seconds: 300
+
 prompt:
   include_repo_instruction_files:
     - AGENTS.md
@@ -187,6 +193,14 @@ preflight:
   require_github_auth: true
   require_linear_auth: true
   require_codex_available: true
+
+verification:
+  enabled: true
+  mode: ui_playwright_mcp # ui_playwright_mcp | backend_smoke | generic_smoke
+  commands:
+    - name: playwright mcp smoke
+      shell: "pnpm exec playwright test --project=chromium"
+      timeout_seconds: 300
 
 validation:
   network: allowed
@@ -286,9 +300,16 @@ candidate_selected
 claimed
 codex_running
 codex_completed
+code_review_running
+code_review_completed
+verification_running
+verification_completed
 validation_running
+validation_completed
 handoff_running
+pr_created
 ci_running
+ci_completed
 succeeded
 succeeded_with_warnings
 failed
@@ -319,9 +340,13 @@ codex_version_too_old
 codex_timeout
 no_commit
 dirty_worktree_after_codex
+dirty_worktree_after_review
+dirty_worktree_after_verification
 dirty_worktree_after_validation
 change_policy_failed
 commit_message_policy_failed
+code_review_failed
+smoke_verification_failed
 validation_failed
 pr_creation_failed
 ci_failed
@@ -376,13 +401,37 @@ codex_running
   -> cancelled
 
 codex_completed
+  -> code_review_running
+  -> verification_running
   -> validation_running
   -> failed
 
-validation_running
+code_review_running
+  -> code_review_completed
+  -> failed
+
+code_review_completed
+  -> verification_running
+  -> validation_running
+  -> failed
+
+verification_running
+  -> verification_completed
+  -> failed
+
+verification_completed
+  -> validation_running
   -> handoff_running
   -> failed
+
+validation_running
+  -> validation_completed
+  -> failed
   -> timed_out
+
+validation_completed
+  -> handoff_running
+  -> failed
 
 handoff_running
   -> ci_running

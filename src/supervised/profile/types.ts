@@ -1,5 +1,6 @@
 export type AgentKind = 'codex';
 export type ValidationNetworkPolicy = 'allowed' | 'disabled';
+export type VerificationMode = 'ui_playwright_mcp' | 'backend_smoke' | 'generic_smoke';
 
 export interface SupervisedProfile {
   schema_version: 1;
@@ -9,6 +10,8 @@ export interface SupervisedProfile {
   agent: AgentConfig;
   prompt: PromptConfig;
   preflight: PreflightConfig;
+  agent_review: AgentReviewConfig;
+  verification: VerificationConfig;
   validation: ValidationConfig;
   change_policy: ChangePolicyConfig;
   git: GitConfig;
@@ -77,6 +80,19 @@ export interface PreflightConfig {
 export type ValidationCommand =
   | { name: string; argv: string[]; timeout_seconds: number }
   | { name: string; shell: string; timeout_seconds: number };
+
+export interface AgentReviewConfig {
+  enabled: boolean;
+  command: string;
+  model: string | null;
+  timeout_seconds: number;
+}
+
+export interface VerificationConfig {
+  enabled: boolean;
+  mode: VerificationMode;
+  commands: ValidationCommand[];
+}
 
 export interface ValidationConfig {
   network: ValidationNetworkPolicy;
