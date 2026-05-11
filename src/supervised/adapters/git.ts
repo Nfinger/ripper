@@ -89,6 +89,12 @@ export class GitAdapter {
     await this.runGit(repoPath, ['worktree', 'add', '-b', branch, worktreePath, baseRef]);
   }
 
+  async protectWorktreeFromAgentPush(worktreePath: string, remote: string): Promise<void> {
+    await this.runGit(worktreePath, ['config', 'extensions.worktreeConfig', 'true']);
+    await this.runGit(worktreePath, ['config', '--worktree', 'push.default', 'nothing']);
+    await this.runGit(worktreePath, ['config', '--worktree', `remote.${remote}.pushurl`, 'DISABLED_BY_SYMPHONY_AGENT_DO_NOT_PUSH']);
+  }
+
   async newCommits(repoPath: string, baseSha: string, headRef: string): Promise<CommitInfo[]> {
     const output = await this.runGit(repoPath, ['log', '--format=%H%x1f%s%x1f%B%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1e', `${baseSha}..${headRef}`]);
     return output
@@ -119,7 +125,8 @@ export class GitAdapter {
   }
 
   async pushBranch(worktreePath: string, remote: string, branch: string): Promise<void> {
-    await this.runGit(worktreePath, ['push', remote, `${branch}:${branch}`]);
+    const remoteUrl = (await this.runGit(worktreePath, ['remote', 'get-url', remote])).trim();
+    await this.runGit(worktreePath, ['push', remoteUrl, `${branch}:${branch}`]);
   }
 
   private async gitBool(cwd: string, args: string[]): Promise<string> {

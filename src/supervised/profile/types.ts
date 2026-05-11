@@ -96,10 +96,19 @@ export interface AgentReviewConfig {
   max_fix_attempts: number;
 }
 
+export interface VerificationEvidenceConfig {
+  required: boolean;
+  artifact_patterns: string[];
+  hosted_url_file: string | null;
+  require_hosted_urls: boolean;
+  github_pr_comment: boolean;
+}
+
 export interface VerificationConfig {
   enabled: boolean;
   mode: VerificationMode;
   commands: ValidationCommand[];
+  evidence: VerificationEvidenceConfig;
 }
 
 export interface ValidationConfig {

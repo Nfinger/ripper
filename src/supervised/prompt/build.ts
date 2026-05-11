@@ -77,6 +77,7 @@ export async function buildPrompt(opts: BuildPromptOptions): Promise<BuildPrompt
     '## Symphony DO NOT Rules',
     [
       '- do not create or push branches',
+      '- do not run git push, gh pr create, gh pr edit, or any external handoff command; Symphony owns push, PR, CI, and Linear handoff after your committed diff passes gates',
       '- do not open PRs',
       '- do not post GitHub or Linear comments',
       '- do not move Linear statuses',

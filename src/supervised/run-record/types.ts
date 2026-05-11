@@ -58,6 +58,7 @@ export type RunReason =
   | 'dirty_worktree_after_verification'
   | 'validation_failed'
   | 'pr_creation_failed'
+  | 'verification_evidence_comment_failed'
   | 'ci_failed'
   | 'ci_timeout'
   | 'linear_handoff_failed'

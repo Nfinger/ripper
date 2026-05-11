@@ -11,6 +11,7 @@ import { writeFileAtomic, writeJsonAtomic } from '../storage/atomic.js';
 
 export interface CodexPhaseGitClient {
   createWorktree(repoPath: string, worktreePath: string, branch: string, baseRef: string): Promise<void>;
+  protectWorktreeFromAgentPush?(worktreePath: string, remote: string): Promise<void>;
 }
 
 export interface CodexPhaseCodexClient {
@@ -53,6 +54,7 @@ export async function runCodexPhase(opts: RunCodexPhaseOptions): Promise<RunCode
 
   try {
     await git.createWorktree(opts.profile.repo.path, worktreePath, opts.branch, opts.baseRef);
+    await git.protectWorktreeFromAgentPush?.(worktreePath, opts.profile.repo.remote);
   } catch (error) {
     await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'worktree_creation_failed', new Date());
     await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'warning', data: { reason: 'worktree_creation_failed', message: error instanceof Error ? error.message : String(error) } });
