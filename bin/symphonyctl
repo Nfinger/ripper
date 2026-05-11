@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Symphony service control. Wraps launchctl + a couple of dev verbs.
+#
+# Usage:
+#   symphonyctl install     copy plist into ~/Library/LaunchAgents and load it
+#   symphonyctl uninstall   stop and remove from launchd
+#   symphonyctl restart     kickstart the service (preserves the load)
+#   symphonyctl status      print launchd status + recent log tail
+#   symphonyctl logs        tail -f the live log
+#   symphonyctl errors      tail -f the error log
+#   symphonyctl dry-run     load all clients, fetch one batch from each tracker, exit
+#   symphonyctl state       curl the local /api/v1/state endpoint and pretty-print
+
+set -euo pipefail
+
+SYMPHONY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LABEL="com.symphony"
+PLIST_SRC="${SYMPHONY_ROOT}/launchd/${LABEL}.plist"
+PLIST_DST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+LOG="${SYMPHONY_ROOT}/symphony.log"
+ERR_LOG="${SYMPHONY_ROOT}/symphony.error.log"
+ENV_FILE="${SYMPHONY_ROOT}/.env"
+CLIENTS_DIR="${SYMPHONY_ROOT}/clients"
+
+require_built() {
+  if [[ ! -f "${SYMPHONY_ROOT}/dist/index.js" ]]; then
+    echo "dist/ is missing — run \`pnpm build\` first." >&2
+    exit 1
+  fi
+}
+
+require_env() {
+  if [[ ! -f "${ENV_FILE}" ]]; then
+    echo ".env is missing — copy .env.example to .env and fill in your tokens." >&2
+    exit 1
+  fi
+}
+
+cmd_install() {
+  require_built
+  require_env
+  mkdir -p "$(dirname "${PLIST_DST}")"
+  cp "${PLIST_SRC}" "${PLIST_DST}"
+  # `bootstrap` replaces the older `load`. Idempotent if already loaded.
+  if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+    echo "Already loaded — kickstarting."
+    launchctl kickstart -k "gui/$(id -u)/${LABEL}"
+  else
+    launchctl bootstrap "gui/$(id -u)" "${PLIST_DST}"
+    echo "Bootstrapped ${LABEL}."
+  fi
+  cmd_status
+}
+
+cmd_uninstall() {
+  if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/${LABEL}" || true
+  fi
+  rm -f "${PLIST_DST}"
+  echo "Uninstalled ${LABEL}."
+}
+
+cmd_restart() {
+  launchctl kickstart -k "gui/$(id -u)/${LABEL}"
+  echo "Kickstarted ${LABEL}."
+}
+
+cmd_status() {
+  if launchctl print "gui/$(id -u)/${LABEL}" >/dev/null 2>&1; then
+    echo "=== launchctl ==="
+    launchctl print "gui/$(id -u)/${LABEL}" | grep -E "^\s*(state|pid|last exit code|program|stdout path|stderr path)"
+  else
+    echo "Not loaded. Run: bin/symphonyctl install"
+    return 1
+  fi
+  echo ""
+  echo "=== last 5 log lines ==="
+  tail -n 5 "${LOG}" 2>/dev/null || echo "(no log yet)"
+  if [[ -s "${ERR_LOG}" ]]; then
+    echo ""
+    echo "=== last 5 error log lines ==="
+    tail -n 5 "${ERR_LOG}"
+  fi
+}
+
+cmd_logs() {
+  : > "${LOG}"  # noop if exists
+  exec tail -F "${LOG}"
+}
+
+cmd_errors() {
+  : > "${ERR_LOG}"
+  exec tail -F "${ERR_LOG}"
+}
+
+cmd_dry_run() {
+  require_built
+  require_env
+  exec /opt/homebrew/bin/node --env-file="${ENV_FILE}" "${SYMPHONY_ROOT}/dist/index.js" --config-dir "${CLIENTS_DIR}" --dry-run
+}
+
+cmd_state() {
+  if command -v jq >/dev/null 2>&1; then
+    curl -s http://127.0.0.1:4321/api/v1/state | jq .
+  else
+    curl -s http://127.0.0.1:4321/api/v1/state
+    echo ""
+  fi
+}
+
+case "${1:-}" in
+  install)   cmd_install ;;
+  uninstall) cmd_uninstall ;;
+  restart)   cmd_restart ;;
+  status)    cmd_status ;;
+  logs)      cmd_logs ;;
+  errors)    cmd_errors ;;
+  dry-run)   cmd_dry_run ;;
+  state)     cmd_state ;;
+  *)
+    cat >&2 <<EOF
+usage: symphonyctl <command>
+
+  install     copy plist into ~/Library/LaunchAgents and load
+  uninstall   stop and remove from launchd
+  restart     kickstart (preserves the load)
+  status      launchd state + recent log tail
+  logs        tail -f the live log
+  errors      tail -f the error log
+  dry-run     fetch one batch of candidates per client, exit
+  state       curl /api/v1/state and pretty-print
+EOF
+    exit 2
+    ;;
+esac

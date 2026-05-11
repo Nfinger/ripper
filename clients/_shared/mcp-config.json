@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "pnpm",
+      "args": [
+        "dlx",
+        "@playwright/mcp@latest",
+        "--isolated",
+        "--viewport-size",
+        "1280x720",
+        "--output-dir",
+        ".symphony/artifacts"
+      ],
+      "env": {}
+    }
+  }
+}

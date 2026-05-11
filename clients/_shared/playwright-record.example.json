@@ -1,0 +1,19 @@
+{
+  "url": "http://localhost:3000/dashboard",
+  "viewport": [1280, 720],
+  "output": ".symphony/artifacts/dashboard-demo.webm",
+  "default_wait_ms": 600,
+  "headless": true,
+  "steps": [
+    { "type": "wait", "ms": 1500 },
+    { "type": "screenshot", "path": ".symphony/artifacts/01-initial.png" },
+    { "type": "click", "selector": "[data-testid='nav-reports']" },
+    { "type": "wait", "ms": 1000 },
+    { "type": "fill", "selector": "input[name='search']", "value": "alerts" },
+    { "type": "press", "selector": "input[name='search']", "key": "Enter" },
+    { "type": "wait", "ms": 2000 },
+    { "type": "screenshot", "path": ".symphony/artifacts/02-search-results.png" },
+    { "type": "scroll", "y": 400 },
+    { "type": "wait", "ms": 1500 }
+  ]
+}

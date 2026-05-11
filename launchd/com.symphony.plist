@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.symphony</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>--env-file=/Users/homebase/ai/symphony/.env</string>
+    <string>/Users/homebase/ai/symphony/dist/index.js</string>
+    <string>--config-dir</string>
+    <string>/Users/homebase/ai/symphony/clients</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/homebase/ai/symphony</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd's PATH is minimal by default; include /opt/homebrew/bin so
+         the agent runner can find git, claude, bash, etc. when it shells out. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/homebase/.local/bin</string>
+  </dict>
+
+  <!-- Auto-start at user login and respawn on crash. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Throttle restart loops if the daemon keeps crashing. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/homebase/ai/symphony/symphony.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/homebase/ai/symphony/symphony.error.log</string>
+</dict>
+</plist>

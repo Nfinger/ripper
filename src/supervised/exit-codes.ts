@@ -1,0 +1,11 @@
+export const EXIT_SUCCEEDED = 0;
+export const EXIT_GENERAL_FAILURE = 1;
+export const EXIT_REFUSED = 2;
+export const EXIT_PREFLIGHT_FAILED = 3;
+export const EXIT_CODEX_FAILED = 4;
+export const EXIT_VALIDATION_FAILED = 5;
+export const EXIT_HANDOFF_FAILED = 6;
+export const EXIT_CI_FAILED = 7;
+export const EXIT_CANCELLED = 8;
+export const EXIT_CONFIG_OR_SCHEMA = 9;
+export const EXIT_LOCK_EXISTS = 10;
