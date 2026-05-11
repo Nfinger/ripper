@@ -58,6 +58,7 @@ export async function buildPrompt(opts: BuildPromptOptions): Promise<BuildPrompt
       '- do not open PRs',
       '- do not post GitHub or Linear comments',
       '- do not move Linear statuses',
+      `- include the issue key ${opts.issue.key} in every commit subject or body`,
       '- do not include secrets in code, commits, logs, or summaries',
       '- do not modify files outside the repo worktree',
       '- do not leave uncommitted changes',
