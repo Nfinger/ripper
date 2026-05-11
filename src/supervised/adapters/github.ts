@@ -97,58 +97,77 @@ export class GitHubCliAdapter {
     let lastChecks: GitHubCheckRun[] = [];
 
     while (Date.now() <= deadline) {
-      const remainingMs = Math.max(1, deadline - Date.now());
-      const result = await this.runChecksCommand(opts, remainingMs);
-      if (result.timedOut) {
-        const parsed = parseChecks(result.stdout);
-        return { ok: false, reason: 'ci_timeout', checks: parsed.ok ? applyExplicitCheckNames(parsed.checks, opts.explicitCheckNames ?? []) : lastChecks };
-      }
+      const result = await this.runCheckSnapshotCommand(opts, Math.max(1, deadline - Date.now()));
+      if (result.timedOut) return { ok: false, reason: 'ci_timeout', checks: lastChecks };
+      if (result.exitCode !== 0) return { ok: false, reason: 'ci_failed', checks: lastChecks };
 
-      const parsed = parseChecks(result.stdout);
-      if (!parsed.ok) {
-        if (isNoChecksYet(result)) {
-          await sleep(Math.max(0, opts.intervalSeconds) * 1000);
-          continue;
-        }
-        return { ok: false, reason: 'ci_failed', checks: lastChecks };
-      }
+      const parsed = parseStatusCheckRollup(result.stdout);
+      if (!parsed.ok) return { ok: false, reason: 'ci_failed', checks: lastChecks };
+
       const checks = applyExplicitCheckNames(parsed.checks, opts.explicitCheckNames ?? []);
       lastChecks = checks;
-      const allSelectedPassing = checks.length > 0 && checks.every((check) => check.bucket === 'pass' || check.bucket === 'skipping');
-      if (allSelectedPassing && (opts.explicitCheckNames?.length || result.exitCode === 0)) return { ok: true, checks };
+      const hasChecks = checks.length > 0;
+      const anyFailing = checks.some((check) => check.bucket === 'fail' || check.bucket === 'cancel');
+      const anyPending = checks.some((check) => check.bucket === 'pending');
+      const allPassing = hasChecks && checks.every((check) => check.bucket === 'pass' || check.bucket === 'skipping');
 
-      if (checks.length > 0) return { ok: false, reason: 'ci_failed', checks };
-      await sleep(Math.max(0, opts.intervalSeconds) * 1000);
+      if (allPassing) return { ok: true, checks };
+      if (hasChecks && anyFailing) return { ok: false, reason: 'ci_failed', checks };
+      if (!hasChecks || anyPending) {
+        await sleep(Math.max(0, opts.intervalSeconds) * 1000);
+        continue;
+      }
+
+      return { ok: false, reason: 'ci_failed', checks };
     }
 
     return { ok: false, reason: 'ci_timeout', checks: lastChecks };
   }
 
-  private async runChecksCommand(opts: WaitForChecksOptions, timeoutMs: number): Promise<CommandResult> {
-    const useFailFast = (opts.explicitCheckNames?.length ?? 0) === 0;
-    const args = [
-      'pr',
-      'checks',
-      opts.prUrl,
-      '--watch',
-      ...(useFailFast ? ['--fail-fast'] : []),
-      '--interval',
-      String(opts.intervalSeconds),
-      '--json',
-      'name,state,bucket,link,workflow',
-      ...(opts.requiredOnly ? ['--required'] : []),
-    ];
-    return this.commandRunner({ mode: 'argv', command: 'gh', args, cwd: opts.cwd, timeoutMs });
+  private async runCheckSnapshotCommand(opts: WaitForChecksOptions, timeoutMs: number): Promise<CommandResult> {
+    return this.commandRunner({
+      mode: 'argv',
+      command: 'gh',
+      args: ['pr', 'view', opts.prUrl, '--json', 'statusCheckRollup'],
+      cwd: opts.cwd,
+      timeoutMs,
+    });
   }
-}
-
-function isNoChecksYet(result: CommandResult): boolean {
-  return result.stdout.trim().length === 0 && /no checks|checks? reported|not found/i.test(result.stderr);
 }
 
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseStatusCheckRollup(stdout: string): { ok: true; checks: GitHubCheckRun[] } | { ok: false } {
+  try {
+    const parsed = JSON.parse(stdout) as { statusCheckRollup?: unknown };
+    if (!Array.isArray(parsed.statusCheckRollup)) return { ok: false };
+    return { ok: true, checks: parsed.statusCheckRollup
+      .filter((check): check is Record<string, unknown> => typeof check === 'object' && check !== null && check.__typename === 'CheckRun')
+      .map((check) => {
+        const status = typeof check.status === 'string' ? check.status : '';
+        const conclusion = typeof check.conclusion === 'string' ? check.conclusion : '';
+        return {
+          name: typeof check.name === 'string' ? check.name : 'unknown-check',
+          state: conclusion || status || 'unknown',
+          bucket: checkRunBucket(status, conclusion),
+          ...(typeof check.detailsUrl === 'string' ? { link: check.detailsUrl } : {}),
+          ...(typeof check.workflowName === 'string' ? { workflow: check.workflowName } : {}),
+        };
+      }) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function checkRunBucket(status: string, conclusion: string): GitHubCheckRun['bucket'] {
+  if (status !== 'COMPLETED') return 'pending';
+  if (conclusion === 'SUCCESS') return 'pass';
+  if (conclusion === 'SKIPPED' || conclusion === 'NEUTRAL') return 'skipping';
+  if (conclusion === 'CANCELLED') return 'cancel';
+  return 'fail';
 }
 
 function parseChecks(stdout: string): { ok: true; checks: GitHubCheckRun[] } | { ok: false } {
