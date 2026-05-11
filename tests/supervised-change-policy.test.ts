@@ -144,7 +144,7 @@ describe('checkCodexChanges', () => {
       { name: 'not in allowed paths', changed: [{ status: 'M', path: 'docs/readme.md' }], files: { 'docs/readme.md': 'docs\n' }, override: { change_policy: { ...profile().change_policy, allowed_paths: ['src/**'] } }, expected: 'path_not_allowed' },
       { name: 'oversized file', changed: [{ status: 'A', path: 'src/big.txt' }], files: { 'src/big.txt': 'abcdef' }, override: { change_policy: { ...profile().change_policy, max_file_bytes: 4 } }, expected: 'file_too_large' },
       { name: 'binary file', changed: [{ status: 'A', path: 'src/blob.bin' }], files: { 'src/blob.bin': Buffer.from([0x61, 0x00, 0x62]) }, expected: 'binary_file' },
-      { name: 'secret content', changed: [{ status: 'A', path: 'src/secret.txt' }], files: { 'src/secret.txt': 'api_key = "sk-test"\n' }, expected: 'secret_keyword' },
+      { name: 'secret content', changed: [{ status: 'A', path: 'src/secret.txt' }], files: { 'src/secret.txt': '-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----\n' }, expected: 'private_key_block' },
     ];
 
     for (const item of cases) {
@@ -159,6 +159,19 @@ describe('checkCodexChanges', () => {
       const summary = JSON.parse(await readFile(join(run.run_dir, 'diff-summary.json'), 'utf8'));
       expect(summary.policy_findings.map((finding: { code: string }) => finding.code)).toContain(item.expected);
     }
+  });
+
+  it('does not fail a changed documentation file for standalone secret-related words without credential values', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'symphony-change-policy-docs-secret-keyword-'));
+    const worktreePath = await mkdtemp(join(tmpdir(), 'symphony-worktree-'));
+    await writeWorktreeFile(worktreePath, 'docs/API.md', 'The API authentication flow does not expose secrets to clients.\n');
+    const run = await codexCompletedRun(homeDir);
+
+    const result = await checkCodexChanges({ homeDir, runId: run.run_id, profile: profile(), worktreePath, baseSha: 'b'.repeat(40), git: gitClient({ changedFiles: vi.fn(async () => [{ status: 'M', path: 'docs/API.md' }]) }) });
+
+    expect(result.ok).toBe(true);
+    const summary = JSON.parse(await readFile(join(run.run_dir, 'diff-summary.json'), 'utf8'));
+    expect(summary.policy_findings).toEqual([]);
   });
 
   it('fails when commit authors violate configured email policy', async () => {

@@ -95,6 +95,29 @@ describe('supervised git adapter', () => {
     expect(await adapter.remoteBaseSha(repo, 'origin', 'main')).toMatch(/^[a-f0-9]{40}$/);
   });
 
+  it('protects agent worktrees from direct remote pushes while wrapper pushBranch still works', async () => {
+    const repo = await createRepo();
+    const remote = await tempDir();
+    const worktree = await tempDir();
+    const adapter = new GitAdapter();
+    await git(remote, ['init', '--bare']);
+    await git(repo, ['remote', 'add', 'origin', remote]);
+    await adapter.pushBranch(repo, 'origin', 'main');
+    const baseSha = await adapter.revParse(repo, 'HEAD');
+    await adapter.createWorktree(repo, worktree, 'feature/protected', baseSha);
+    await adapter.protectWorktreeFromAgentPush(worktree, 'origin');
+    await git(worktree, ['config', 'user.name', 'Test User']);
+    await git(worktree, ['config', 'user.email', 'test@example.com']);
+    await writeFile(join(worktree, 'feature.txt'), 'feature\n');
+    await git(worktree, ['add', 'feature.txt']);
+    await git(worktree, ['commit', '-m', 'add feature']);
+
+    await expect(adapter.runGit(worktree, ['push', 'origin', 'HEAD:feature/protected'])).rejects.toThrow(/DISABLED_BY_SYMPHONY_AGENT_DO_NOT_PUSH/u);
+
+    await adapter.pushBranch(worktree, 'origin', 'feature/protected');
+    expect(await adapter.remoteBranchExists(repo, 'origin', 'feature/protected')).toBe(true);
+  });
+
   it('throws when remote branch existence cannot be checked because the remote is unreadable', async () => {
     const repo = await createRepo();
     const adapter = new GitAdapter();

@@ -36,6 +36,7 @@ function clients(overrides: Partial<RealRunClients> = {}): RealRunClients {
       await mkdir(path.join(worktreePath, 'src'), { recursive: true });
       await writeFile(path.join(worktreePath, 'src', 'app.ts'), 'export const value = 1;\n');
     }),
+    protectWorktreeFromAgentPush: vi.fn(async () => undefined),
     newCommits: vi.fn(async () => [{ sha: 'a'.repeat(40), subject: 'ENG-1 implement thing', body: '', authorName: 'Codex', authorEmail: 'codex@example.com', committerName: 'Codex', committerEmail: 'codex@example.com' }]),
     changedFiles: vi.fn(async () => [{ status: 'A', path: 'src/app.ts' }]),
     pushBranch: vi.fn(async () => undefined),
@@ -61,6 +62,7 @@ function clients(overrides: Partial<RealRunClients> = {}): RealRunClients {
       checkAuth: vi.fn(async () => ({ ok: true })),
       createPullRequest: vi.fn(async () => ({ number: 42, url: 'https://github.com/acme/repo/pull/42' })),
       waitForChecks: vi.fn(async () => ({ ok: true, checks: [{ name: 'backend-tests', bucket: 'pass', state: 'SUCCESS' }] })),
+      postPullRequestComment: vi.fn(async () => undefined),
     },
     codexReadiness: { checkAvailable: vi.fn(async () => ({ ok: true, version: '0.129.0' })) },
     codex: { run: vi.fn(async () => ({ ok: true as const, finalText: 'done', exitCode: 0, timedOut: false as const })) },
@@ -84,6 +86,7 @@ describe('runRealRun', () => {
     expect(result.run.issue_key).toBe('ENG-1');
     expect(deps.linear.claimIssue).toHaveBeenCalledWith({ issueId: 'i1', profile: expect.any(Object), assigneeId: 'me' });
     expect(deps.git.createWorktree).toHaveBeenCalledWith(repo, expect.stringContaining(path.join(homeDir, '.symphony', 'worktrees')), 'symphony/p/ENG-1-implementation', 'origin/main');
+    expect(deps.git.protectWorktreeFromAgentPush).toHaveBeenCalledWith(expect.stringContaining(path.join(homeDir, '.symphony', 'worktrees')), 'origin');
     expect(deps.codex.run).toHaveBeenCalled();
     expect(deps.reviewer.run).toHaveBeenCalled();
     expect(await readFile(path.join(result.run.run_dir, 'agent-review.md'), 'utf8')).toContain('APPROVED');
@@ -290,6 +293,29 @@ describe('runRealRun', () => {
     expect(deps.github.createPullRequest).toHaveBeenCalled();
   });
 
+  it('autonomously remediates when reviewer puts REQUEST_CHANGES on the first line followed by bullets', async () => {
+    const { homeDir } = await setupHome({
+      validationYaml: `validation:
+  network: allowed
+  commands:
+    - name: unit-tests
+      argv: [pnpm, test]
+      timeout_seconds: 90`,
+    });
+    const deps = clients({
+      reviewer: { run: vi.fn()
+        .mockResolvedValueOnce({ ok: true as const, finalText: 'REQUEST_CHANGES — blocking issues found.\n- Update API docs.', exitCode: 0, timedOut: false as const })
+        .mockResolvedValueOnce({ ok: true as const, finalText: 'APPROVED — no blocking issues found.\n- API docs updated.', exitCode: 0, timedOut: false as const }) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).toBe(0);
+    expect(deps.codex.run).toHaveBeenCalledTimes(2);
+    expect(deps.reviewer.run).toHaveBeenCalledTimes(2);
+    expect(deps.validation.run).toHaveBeenCalled();
+  });
+
   it('fails before validation after review remediation attempts are exhausted', async () => {
     const { homeDir } = await setupHome({
       validationYaml: `validation:
@@ -393,6 +419,103 @@ describe('runRealRun', () => {
     const prBody = (deps.github.createPullRequest as ReturnType<typeof vi.fn>).mock.calls[0][0].body;
     expect(prBody).toContain('Smoke Verification');
   });
+
+  it('collects required video evidence and posts a GitHub PR comment after PR creation', async () => {
+    const { homeDir } = await setupHome({
+      verificationYaml: `verification:
+  enabled: true
+  mode: ui_playwright_mcp
+  commands:
+    - name: playwright-video-smoke
+      argv: [pnpm, exec, playwright, test, --project=chromium]
+      timeout_seconds: 120
+  evidence:
+    required: true
+    artifact_patterns:
+      - test-results/**/*.webm
+      - test-results/**/*.mp4
+    hosted_url_file: .symphony/evidence/links.json
+    require_hosted_urls: true
+    github_pr_comment: true`,
+      validationYaml: `validation:
+  network: allowed
+  commands:
+    - name: unit-tests
+      argv: [pnpm, test]
+      timeout_seconds: 90`,
+    });
+    const deps = clients({
+      validation: { run: vi.fn(async (opts) => {
+        if (opts.command === 'pnpm' && opts.args?.includes('playwright')) {
+          await mkdir(path.join(opts.cwd, 'test-results', 'mar-2'), { recursive: true });
+          await writeFile(path.join(opts.cwd, 'test-results', 'mar-2', 'verification.webm'), 'fake video');
+          await mkdir(path.join(opts.cwd, 'media'), { recursive: true });
+          await writeFile(path.join(opts.cwd, 'media', 'unrelated.webm'), 'do not collect');
+          await mkdir(path.join(opts.cwd, '.symphony', 'evidence'), { recursive: true });
+          await writeFile(path.join(opts.cwd, '.symphony', 'evidence', 'links.json'), JSON.stringify({ artifacts: [{ title: 'PAC donations verification video', url: 'https://assets.example.com/mar-2.webm', media_type: 'video/webm', description: 'Shows the PAC donations section rendering on a ticker page.' }] }));
+        }
+        return { command: opts.command, args: opts.args ?? [], cwd: opts.cwd, exitCode: 0, signal: null, timedOut: false, stdout: 'ok', stderr: '', durationMs: 12 };
+      }) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(path.join(result.run.run_dir, 'evidence', 'test-results', 'mar-2', 'verification.webm'), 'utf8')).toBe('fake video');
+    await expect(readFile(path.join(result.run.run_dir, 'evidence', 'media', 'unrelated.webm'), 'utf8')).rejects.toThrow();
+    expect(await readFile(path.join(homeDir, '.symphony', 'worktrees', result.run.run_id, 'media', 'unrelated.webm'), 'utf8')).toBe('do not collect');
+    const evidenceSummary = await readFile(path.join(result.run.run_dir, 'evidence-summary.md'), 'utf8');
+    expect(evidenceSummary).toContain('PAC donations verification video');
+    expect(evidenceSummary).toContain('https://assets.example.com/mar-2.webm');
+    expect(deps.github.postPullRequestComment).toHaveBeenCalledWith(expect.objectContaining({
+      prUrl: 'https://github.com/acme/repo/pull/42',
+      body: expect.stringContaining('Verification Evidence'),
+    }));
+  });
+
+  it('fails required hosted evidence when the hosted URL file only contains unsafe URLs', async () => {
+    const { homeDir } = await setupHome({
+      verificationYaml: `verification:
+  enabled: true
+  mode: ui_playwright_mcp
+  commands:
+    - name: playwright-video-smoke
+      argv: [pnpm, exec, playwright, test]
+      timeout_seconds: 120
+  evidence:
+    required: true
+    artifact_patterns: []
+    hosted_url_file: .symphony/evidence/links.json
+    require_hosted_urls: true
+    github_pr_comment: true`,
+      validationYaml: `validation:
+  network: allowed
+  commands:
+    - name: unit-tests
+      argv: [pnpm, test]
+      timeout_seconds: 90`,
+    });
+    const deps = clients({
+      validation: { run: vi.fn(async (opts) => {
+        if (opts.command === 'pnpm' && opts.args?.includes('playwright')) {
+          await mkdir(path.join(opts.cwd, '.symphony', 'evidence'), { recursive: true });
+          await writeFile(path.join(opts.cwd, '.symphony', 'evidence', 'links.json'), JSON.stringify({ artifacts: [{ title: 'unsafe', url: 'javascript:alert(1)' }] }));
+        }
+        return { command: opts.command, args: opts.args ?? [], cwd: opts.cwd, exitCode: 0, signal: null, timedOut: false, stdout: 'ok', stderr: '', durationMs: 12 };
+      }) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).not.toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toBe('smoke_verification_failed');
+    expect(deps.github.createPullRequest).not.toHaveBeenCalled();
+    expect(deps.github.postPullRequestComment).not.toHaveBeenCalled();
+    expect(deps.linear.postComment).toHaveBeenCalledWith('i1', expect.stringContaining('Reason: smoke_verification_failed'));
+  });
+
   it('terminalizes and comments when smoke verification execution throws after entering verification_running', async () => {
     const { homeDir } = await setupHome({
       verificationYaml: `verification:

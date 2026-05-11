@@ -66,7 +66,14 @@ export async function evaluateChangePolicy(worktreePath: string, changedFiles: C
 
     const text = data.toString('utf8');
     const scan = scanPublicContent(text, { surface: 'github' });
+    const hasHighConfidenceSecret = scan.findings.some((finding) => finding.code !== 'secret_keyword');
     for (const finding of scan.findings) {
+      // `secret_keyword` is intentionally broad for shareable-text warnings. Do not
+      // fail an otherwise safe code/documentation change merely because the file
+      // contains benign words like "API", "authentication", or "secret". Keep it
+      // as a hard blocker only when a higher-confidence credential finding also
+      // fired for the same changed file.
+      if (finding.code === 'secret_keyword' && !hasHighConfidenceSecret) continue;
       findings.push({ code: finding.code, path: changed.path, message: finding.message });
     }
   }

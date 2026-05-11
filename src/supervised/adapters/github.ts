@@ -17,6 +17,12 @@ export interface PullRequestResult {
   url: string;
 }
 
+export interface PostPullRequestCommentOptions {
+  cwd: string;
+  prUrl: string;
+  body: string;
+}
+
 export interface GitHubCheckRun {
   name: string;
   state: string;
@@ -89,6 +95,11 @@ export class GitHubCliAdapter {
       if (fallbackNumber !== null) return { number: fallbackNumber, url };
       throw new Error(`gh pr view returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  async postPullRequestComment(opts: PostPullRequestCommentOptions): Promise<void> {
+    const result = await this.commandRunner({ mode: 'argv', command: 'gh', args: ['pr', 'comment', opts.prUrl, '--body', opts.body], cwd: opts.cwd, timeoutMs: 60_000 });
+    if (result.exitCode !== 0) throw new Error(`gh pr comment failed: ${result.stderr || result.stdout}`.trim());
   }
 
   async waitForChecks(opts: WaitForChecksOptions): Promise<WaitForChecksResult> {

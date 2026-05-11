@@ -302,15 +302,38 @@ function parseAgentReview(record: Record<string, unknown> | null, sourcePath: st
   return { enabled, command, model: modelValue, timeout_seconds: timeout, max_fix_attempts: maxFixAttemptsValue };
 }
 
+function defaultVerificationEvidence() {
+  return { required: false, artifact_patterns: [], hosted_url_file: null, require_hosted_urls: false, github_pr_comment: false };
+}
+
+function parseVerificationEvidence(record: Record<string, unknown> | null, sourcePath: string): ParseResult<VerificationConfig['evidence']> {
+  if (record === null) return defaultVerificationEvidence();
+  const required = requiredBoolean(record, 'required', sourcePath, 'verification.evidence.required');
+  if (required instanceof SupervisedProfileError) return required;
+  const patterns = requiredStringArray(record, 'artifact_patterns', sourcePath, 'verification.evidence.artifact_patterns');
+  if (patterns instanceof SupervisedProfileError) return patterns;
+  const hostedUrlFile = record.hosted_url_file ?? null;
+  if (hostedUrlFile !== null && typeof hostedUrlFile !== 'string') return invalid(sourcePath, 'verification.evidence.hosted_url_file');
+  const requireHosted = requiredBoolean(record, 'require_hosted_urls', sourcePath, 'verification.evidence.require_hosted_urls');
+  if (requireHosted instanceof SupervisedProfileError) return requireHosted;
+  const githubComment = requiredBoolean(record, 'github_pr_comment', sourcePath, 'verification.evidence.github_pr_comment');
+  if (githubComment instanceof SupervisedProfileError) return githubComment;
+  return { required, artifact_patterns: patterns, hosted_url_file: hostedUrlFile, require_hosted_urls: requireHosted, github_pr_comment: githubComment };
+}
+
 function parseVerification(record: Record<string, unknown> | null, sourcePath: string): ParseResult<VerificationConfig> {
-  if (record === null) return { enabled: false, mode: 'generic_smoke', commands: [] };
+  if (record === null) return { enabled: false, mode: 'generic_smoke', commands: [], evidence: defaultVerificationEvidence() };
   const enabled = requiredBoolean(record, 'enabled', sourcePath, 'verification.enabled');
   if (enabled instanceof SupervisedProfileError) return enabled;
   if (record.mode !== 'ui_playwright_mcp' && record.mode !== 'backend_smoke' && record.mode !== 'generic_smoke') return invalid(sourcePath, 'verification.mode');
   if (!Array.isArray(record.commands)) return invalid(sourcePath, 'verification.commands');
   const commands = parseCommandArray(record.commands, sourcePath, 'verification.commands');
   if (commands instanceof SupervisedProfileError) return commands;
-  return { enabled, mode: record.mode, commands };
+  const evidenceRecord = optionalRecord(record, 'evidence', sourcePath);
+  if (evidenceRecord instanceof SupervisedProfileError) return evidenceRecord;
+  const evidence = parseVerificationEvidence(evidenceRecord, sourcePath);
+  if (evidence instanceof SupervisedProfileError) return evidence;
+  return { enabled, mode: record.mode, commands, evidence };
 }
 
 function parseCommandArray(items: unknown[], sourcePath: string, basePath: string): ParseResult<ValidationCommand[]> {

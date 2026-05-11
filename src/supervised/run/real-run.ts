@@ -1,10 +1,10 @@
-import { readFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { GitAdapter } from '../adapters/git.js';
 import { LinearReadAdapter, type LinearIssue } from '../adapters/linear.js';
 import { CodexAdapter } from '../adapters/codex.js';
-import { GitHubCliAdapter, type CreatePullRequestOptions, type GitHubCheckRun, type PullRequestResult, type WaitForChecksOptions, type WaitForChecksResult } from '../adapters/github.js';
+import { GitHubCliAdapter, type CreatePullRequestOptions, type GitHubCheckRun, type PostPullRequestCommentOptions, type PullRequestResult, type WaitForChecksOptions, type WaitForChecksResult } from '../adapters/github.js';
 import { runCommand } from '../command-runner/runner.js';
 import type { CommandResult, RunCommandOptions } from '../command-runner/types.js';
 import { EXIT_CODEX_FAILED, EXIT_CONFIG_OR_SCHEMA, EXIT_LOCK_EXISTS, EXIT_PREFLIGHT_FAILED, EXIT_REFUSED, EXIT_SUCCEEDED } from '../exit-codes.js';
@@ -29,6 +29,7 @@ export interface RealRunGitClient extends GitPreflightClient, CodexPhaseGitClien
 
 export interface RealRunGitHubClient extends GitHubPreflightClient {
   createPullRequest(opts: CreatePullRequestOptions): Promise<PullRequestResult>;
+  postPullRequestComment(opts: PostPullRequestCommentOptions): Promise<void>;
   waitForChecks(opts: WaitForChecksOptions): Promise<WaitForChecksResult>;
 }
 
@@ -95,7 +96,8 @@ export async function resumeRealRun(opts: ResumeRealRunOptions): Promise<RunReal
     if (run.profile_hash !== loaded.resolvedHash) {
       return failResumeIntegrity({ homeDir: opts.homeDir, run, reasonDetail: 'Run profile hash does not match current profile definition' });
     }
-    if (run.status !== 'pr_created' && run.status !== 'ci_running' && run.status !== 'ci_completed') {
+    const canRetryPrCreation = run.status === 'failed' && run.reason === 'pr_creation_failed';
+    if (!canRetryPrCreation && run.status !== 'pr_created' && run.status !== 'ci_running' && run.status !== 'ci_completed') {
       return failResumeIntegrity({ homeDir: opts.homeDir, run, reasonDetail: `Run status ${run.status} is not resumable by this slice` });
     }
 
@@ -107,6 +109,11 @@ export async function resumeRealRun(opts: ResumeRealRunOptions): Promise<RunReal
     }
     if (!issue) return failResumeIntegrity({ homeDir: opts.homeDir, run: await readRunById(opts.homeDir, run.run_id), reasonDetail: 'Could not resolve Linear issue for resumed run' });
     const expectedBranch = branchName(profile.name, issue.key, 'implementation');
+    if (canRetryPrCreation) {
+      const symphonyDir = path.dirname(path.dirname(run.run_dir));
+      const worktreePath = path.join(symphonyDir, 'worktrees', run.run_id);
+      return runHandoffPhase({ homeDir: opts.homeDir, runId: run.run_id, profile, issue, branch: expectedBranch, worktreePath, git: clients.git, github: clients.github, linear: clients.linear });
+    }
     const pr = await readPrMetadata({ runDir: run.run_dir, runId: run.run_id, expectedBase: profile.repo.base_branch, expectedHead: expectedBranch });
     if (!pr) return failResumeIntegrity({ homeDir: opts.homeDir, run: await readRunById(opts.homeDir, run.run_id), reasonDetail: 'Missing or invalid pr.json for resumed run' });
     const branch = pr.head;
@@ -355,16 +362,16 @@ async function runAgentReviewPhase(opts: { homeDir: string; runId: string; profi
   await writeFileAtomic(finalPath, redactShareableText(result.finalText));
   await addArtifacts(run.run_dir, [{ path: finalPath, visibility: 'redacted_shareable', kind: 'agent_review_final' }]);
   await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'artifact', data: { artifacts: ['agent-review.md'] } });
-  const finalLine = result.finalText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1)?.toUpperCase() ?? '';
+  const verdict = parseReviewVerdict(result.finalText);
   const dirty = await opts.git.statusPorcelain(opts.worktreePath);
   if (dirty.trim().length > 0) {
     await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'dirty_worktree_after_review');
     return { ok: false, reason: 'dirty_worktree_after_review' };
   }
-  if (finalLine.startsWith('REQUEST_CHANGES')) {
+  if (verdict === 'REQUEST_CHANGES') {
     return { ok: false, reason: 'code_review_failed', requestChanges: true, reviewText: redactShareableText(result.finalText) };
   }
-  if (!finalLine.startsWith('APPROVED')) {
+  if (verdict !== 'APPROVED') {
     await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'code_review_failed');
     return { ok: false, reason: 'code_review_failed' };
   }
@@ -392,11 +399,22 @@ function buildAgentReviewPrompt(opts: { issue: LinearIssue; diffSummary: string 
     opts.diffSummary.trim() || '(No diff summary available.)',
     '',
     '## Output contract',
-    'Start the final line with exactly one of:',
+    'Put the verdict on the first non-empty line, starting with exactly one of:',
     '- APPROVED — no blocking issues found.',
     '- REQUEST_CHANGES — blocking issues found, followed by bullets.',
     '',
   ].join('\n');
+}
+
+function parseReviewVerdict(text: string): 'APPROVED' | 'REQUEST_CHANGES' | 'INVALID' {
+  const lines = text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).map((line) => line.toUpperCase());
+  const firstLine = lines[0] ?? '';
+  if (firstLine.startsWith('APPROVED')) return 'APPROVED';
+  if (firstLine.startsWith('REQUEST_CHANGES')) return 'REQUEST_CHANGES';
+  const lastLine = lines.at(-1) ?? '';
+  if (lastLine.startsWith('APPROVED')) return 'APPROVED';
+  if (lastLine.startsWith('REQUEST_CHANGES')) return 'REQUEST_CHANGES';
+  return 'INVALID';
 }
 
 async function runReviewRemediationPhase(opts: { homeDir: string; runId: string; profile: SupervisedProfile; issue: LinearIssue; worktreePath: string; codex: CodexPhaseCodexClient; reviewText: string; attempt: number }): Promise<GateResult> {
@@ -475,6 +493,12 @@ async function runSmokeVerificationPhase(opts: { homeDir: string; runId: string;
       await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'smoke_verification_failed');
       return { ok: false, reason: 'smoke_verification_failed' };
     }
+  }
+  const evidence = await collectVerificationEvidence({ runDir: run.run_dir, runId: opts.runId, worktreePath: opts.worktreePath, profile: opts.profile });
+  if (!evidence.ok) {
+    await writeVerificationSummary(run.run_dir, opts.runId, opts.profile.verification.mode, results, evidence.reason);
+    await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'smoke_verification_failed');
+    return { ok: false, reason: 'smoke_verification_failed' };
   }
   const dirty = await opts.git.statusPorcelain(opts.worktreePath);
   if (dirty.trim().length > 0) {
@@ -556,6 +580,14 @@ async function runHandoffPhase(opts: { homeDir: string; runId: string; profile: 
     await addArtifacts(run.run_dir, [{ path: prJsonPath, visibility: 'local_only', kind: 'pr_metadata' }]);
     await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: 'github_pr_created', number: pr.number, url: pr.url } });
     await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'pr_created');
+    const evidenceComment = await maybePostVerificationEvidenceComment({ runDir: run.run_dir, runId: opts.runId, profile: opts.profile, issue: opts.issue, pr, worktreePath: opts.worktreePath, github: opts.github });
+    if (!evidenceComment.ok) {
+      await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'verification_evidence_comment_failed');
+      await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'warning', data: { warning: 'verification_evidence_comment_failed', error: evidenceComment.error } });
+      await postFailureComment({ runDir: run.run_dir, runId: opts.runId, issue: opts.issue, linear: opts.linear, profile: opts.profile, reason: 'verification_evidence_comment_failed' });
+      await writeFileAtomic(path.join(run.run_dir, 'result.md'), '# Symphony verification evidence comment failed\n\nReason: verification_evidence_comment_failed\n');
+      return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.homeDir, opts.runId), message: 'Verification evidence comment failed: verification_evidence_comment_failed' };
+    }
     if (!opts.profile.github.require_ci_green_before_success) {
       await writeFileAtomic(path.join(run.run_dir, 'result.md'), ['# Symphony PR created', '', `Issue: ${opts.issue.key}`, `Branch: ${opts.branch}`, `PR: ${pr.url}`, '', 'Stopped before CI wait or Linear success handoff.', ''].join('\n'));
       return { exitCode: EXIT_SUCCEEDED, run: await readRunById(opts.homeDir, opts.runId), message: `PR created for ${opts.issue.key}: ${pr.url}` };
@@ -706,8 +738,9 @@ async function buildPrBody(opts: { runDir: string; issue: LinearIssue; branch: s
   ].join('\n');
   const body = enforcePrBodyMaxChars(redactShareableText(raw), opts.maxChars);
   const scan = scanPublicContent(body, { surface: 'github' });
-  if (!scan.ok) {
-    const findings = scan.findings.map((finding) => finding.code).join(', ');
+  const blockingFindings = scan.findings.filter((finding) => finding.code !== 'secret_keyword');
+  if (blockingFindings.length > 0) {
+    const findings = blockingFindings.map((finding) => finding.code).join(', ');
     throw new Error(`PR body failed safety scan: ${findings}`);
   }
   return body;
@@ -752,6 +785,188 @@ async function writeVerificationSummary(runDir: string, runId: string, mode: str
     { path: mdPath, visibility: 'redacted_shareable', kind: 'verification_summary_markdown' },
   ]);
   await appendEvent(runDir, { schema_version: 1, event_id: randomUUID(), run_id: runId, timestamp: new Date().toISOString(), type: 'artifact', data: { artifacts: ['verification-summary.json', 'verification-summary.md'] } });
+}
+
+type EvidenceLink = { title: string; url: string; media_type?: string; description?: string };
+
+async function collectVerificationEvidence(opts: { runDir: string; runId: string; worktreePath: string; profile: SupervisedProfile }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const config = opts.profile.verification.evidence;
+  if (!config.required && config.artifact_patterns.length === 0 && !config.hosted_url_file) return { ok: true };
+
+  const matched = await findEvidenceFiles(opts.worktreePath, config.artifact_patterns);
+  const evidenceDir = path.join(opts.runDir, 'evidence');
+  await mkdir(evidenceDir, { recursive: true });
+  const copied: string[] = [];
+  for (const source of matched) {
+    const relativeSource = path.relative(opts.worktreePath, source);
+    if (relativeSource.startsWith('..') || path.isAbsolute(relativeSource)) return { ok: false, reason: `Verification evidence path escapes worktree: ${source}` };
+    const dest = path.join(evidenceDir, relativeSource);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await copyFile(source, dest);
+    copied.push(dest);
+    if (isGeneratedEvidencePath(relativeSource)) await rm(source, { force: true });
+  }
+
+  let hostedUrlPath: string | null = null;
+  if (config.hosted_url_file) {
+    const safePath = safeWorktreePath(opts.worktreePath, config.hosted_url_file);
+    if (!safePath.ok) return { ok: false, reason: safePath.reason };
+    hostedUrlPath = safePath.path;
+  }
+  const rawLinks = hostedUrlPath ? await readEvidenceLinks(hostedUrlPath) : [];
+  const links = normalizeEvidenceLinks(rawLinks);
+  if (hostedUrlPath) await rm(hostedUrlPath, { force: true });
+  if (config.required && copied.length === 0 && links.length === 0) return { ok: false, reason: 'Required verification evidence was not produced' };
+  if (config.require_hosted_urls && links.length === 0) return { ok: false, reason: 'Required hosted verification evidence URLs were not produced' };
+
+  const jsonPath = path.join(opts.runDir, 'evidence-summary.json');
+  const mdPath = path.join(opts.runDir, 'evidence-summary.md');
+  await writeJsonAtomic(jsonPath, { schema_version: 1, run_id: opts.runId, local_artifacts: copied.map((file) => path.relative(opts.runDir, file)), hosted_artifacts: links });
+  await writeFileAtomic(mdPath, renderEvidenceSummary({ runId: opts.runId, localArtifacts: copied.map((file) => path.relative(opts.runDir, file)), hostedLinks: links }));
+  await addArtifacts(opts.runDir, [
+    { path: jsonPath, visibility: 'local_only', kind: 'verification_evidence_json' },
+    { path: mdPath, visibility: 'github_visible', kind: 'verification_evidence_summary' },
+    ...copied.map((file): RunArtifact => ({ path: file, visibility: 'redacted_shareable', kind: 'verification_video' })),
+  ]);
+  await appendEvent(opts.runDir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'artifact', data: { artifacts: ['evidence-summary.json', 'evidence-summary.md'], evidence_count: copied.length + links.length } });
+  return { ok: true };
+}
+
+async function maybePostVerificationEvidenceComment(opts: { runDir: string; runId: string; profile: SupervisedProfile; issue: LinearIssue; pr: PullRequestResult; worktreePath: string; github: RealRunGitHubClient }): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!opts.profile.verification.evidence.github_pr_comment) return { ok: true };
+  try {
+    const summary = await readOptionalFile(path.join(opts.runDir, 'evidence-summary.md'));
+    if (!summary.trim()) return { ok: true };
+    const body = redactShareableText(['## Symphony Verification Evidence', '', `Issue: ${opts.issue.key}`, `Run ID: ${opts.runId}`, '', summary.trim(), '', '_Posted by Symphony after required evidence capture._', ''].join('\n'));
+    const scan = scanPublicContent(body, { surface: 'github' });
+    const blockingFindings = scan.findings.filter((finding) => finding.code !== 'secret_keyword');
+    if (blockingFindings.length > 0) return { ok: false, error: `Verification evidence comment failed safety scan: ${blockingFindings.map((finding) => finding.code).join(', ')}` };
+    await opts.github.postPullRequestComment({ cwd: opts.worktreePath, prUrl: opts.pr.url, body });
+    await appendEvent(opts.runDir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: 'github_verification_evidence_comment_posted', pr_url: opts.pr.url } });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: redactShareableText(error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+function renderEvidenceSummary(opts: { runId: string; localArtifacts: string[]; hostedLinks: EvidenceLink[] }): string {
+  const lines = ['# Verification Evidence', '', `Run ID: ${opts.runId}`, ''];
+  if (opts.hostedLinks.length > 0) {
+    lines.push('## Video / hosted artifacts', '');
+    for (const artifact of opts.hostedLinks) {
+      const safeUrl = safeEvidenceUrl(artifact.url);
+      if (!safeUrl) continue;
+      const title = markdownLinkText(artifact.title || 'Verification artifact');
+      const description = artifact.description ? ` — ${markdownLinkText(artifact.description)}` : '';
+      lines.push(`- [${title}](${safeUrl})${description}`);
+    }
+  }
+  if (opts.localArtifacts.length > 0) {
+    lines.push('', '## Local run artifacts', '');
+    for (const artifact of opts.localArtifacts) lines.push(`- ${artifact}`);
+  }
+  if (opts.hostedLinks.length === 0 && opts.localArtifacts.length === 0) lines.push('- No verification evidence artifacts collected');
+  return `${lines.join('\n')}\n`;
+}
+
+async function readEvidenceLinks(filePath: string): Promise<EvidenceLink[]> {
+  try {
+    const parsed = JSON.parse(await readFile(filePath, 'utf8')) as { artifacts?: unknown } | unknown[];
+    const rawItems = Array.isArray(parsed) ? parsed : Array.isArray((parsed as { artifacts?: unknown }).artifacts) ? (parsed as { artifacts: unknown[] }).artifacts : [];
+    return rawItems.flatMap((item) => {
+      if (typeof item !== 'object' || item === null) return [];
+      const record = item as Record<string, unknown>;
+      if (typeof record.url !== 'string') return [];
+      return [{ title: typeof record.title === 'string' ? record.title : 'Verification artifact', url: record.url, ...(typeof record.media_type === 'string' ? { media_type: record.media_type } : {}), ...(typeof record.description === 'string' ? { description: record.description } : {}) }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function findEvidenceFiles(root: string, patterns: string[]): Promise<string[]> {
+  const matched = new Set<string>();
+  for (const pattern of patterns) {
+    const matcher = evidencePatternMatcher(root, pattern);
+    if (!matcher.ok) continue;
+    const files = await walkFiles(matcher.baseDir);
+    for (const file of files) {
+      const relative = path.relative(root, file).split(path.sep).join('/');
+      if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+      if (relative.startsWith(matcher.relativePrefix) && file.endsWith(matcher.suffix)) matched.add(file);
+    }
+  }
+  return [...matched].sort();
+}
+
+function evidencePatternMatcher(root: string, pattern: string): { ok: true; baseDir: string; relativePrefix: string; suffix: string } | { ok: false } {
+  if (path.isAbsolute(pattern) || pattern.split(/[\\/]+/u).includes('..')) return { ok: false };
+  const normalized = pattern.split(path.sep).join('/');
+  const firstStar = normalized.indexOf('*');
+  if (firstStar < 0) {
+    const safe = safeWorktreePath(root, normalized);
+    if (!safe.ok) return { ok: false };
+    return { ok: true, baseDir: path.dirname(safe.path), relativePrefix: normalized, suffix: '' };
+  }
+  const prefixBeforeGlob = normalized.slice(0, firstStar);
+  const relativeBase = prefixBeforeGlob.includes('/') ? prefixBeforeGlob.slice(0, prefixBeforeGlob.lastIndexOf('/')) : '.';
+  const suffix = normalized.slice(normalized.lastIndexOf('*') + 1);
+  const safe = safeWorktreePath(root, relativeBase || '.');
+  if (!safe.ok) return { ok: false };
+  const relativePrefix = relativeBase === '.' ? '' : `${relativeBase.replace(/\/$/u, '')}/`;
+  return { ok: true, baseDir: safe.path, relativePrefix, suffix };
+}
+
+function safeWorktreePath(root: string, relativePath: string): { ok: true; path: string } | { ok: false; reason: string } {
+  if (path.isAbsolute(relativePath) || relativePath.split(/[\\/]+/u).includes('..')) return { ok: false, reason: `Verification evidence path must stay inside the worktree: ${relativePath}` };
+  const resolved = path.resolve(root, relativePath);
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return { ok: false, reason: `Verification evidence path must stay inside the worktree: ${relativePath}` };
+  return { ok: true, path: resolved };
+}
+
+function isGeneratedEvidencePath(relativePath: string): boolean {
+  const normalized = relativePath.split(path.sep).join('/');
+  return normalized.startsWith('.symphony/evidence/') || normalized.includes('/test-results/') || normalized.startsWith('test-results/');
+}
+
+function markdownLinkText(text: string): string {
+  return text.replace(/[\\[\]]/gu, '\\$&').replace(/\r?\n/gu, ' ');
+}
+
+function safeEvidenceUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function normalizeEvidenceLinks(links: EvidenceLink[]): EvidenceLink[] {
+  return links.flatMap((link) => {
+    const safeUrl = safeEvidenceUrl(link.url);
+    if (!safeUrl) return [];
+    return [{ ...link, url: safeUrl }];
+  });
+}
+
+async function walkFiles(dir: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.name === '.git' || entry.name === 'node_modules') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...await walkFiles(full));
+    else if (entry.isFile()) files.push(full);
+  }
+  return files;
 }
 
 async function writeValidationSummary(runDir: string, runId: string, results: Array<{ name: string; status: 'passed' | 'failed'; exitCode: number; timedOut: boolean; durationMs: number }>, dirtyStatus?: string): Promise<void> {

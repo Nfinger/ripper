@@ -23,7 +23,7 @@ const ALLOWED_TRANSITIONS: Record<RunStatus, RunStatus[]> = {
   ci_completed: ['succeeded', 'failed'],
   succeeded: [],
   succeeded_with_warnings: [],
-  failed: [],
+  failed: ['handoff_running'],
   timed_out: [],
   cancelled: [],
   refused: [],

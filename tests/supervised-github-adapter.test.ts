@@ -142,4 +142,17 @@ describe('GitHubCliAdapter', () => {
 
     await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: false, explicitCheckNames: ['backend-tests', 'frontend-build'], timeoutMs: 60000, intervalSeconds: 0 })).resolves.toEqual({ ok: false, reason: 'ci_failed', checks: [{ name: 'backend-tests', state: 'SUCCESS', bucket: 'pass' }, { name: 'frontend-build', state: 'missing', bucket: 'fail' }] });
   });
+
+  it('posts PR comments using gh pr comment', async () => {
+    const calls: RunCommandOptions[] = [];
+    const adapter = new GitHubCliAdapter({ commandRunner: vi.fn(async (opts: RunCommandOptions) => {
+      calls.push(opts);
+      return { command: opts.command, args: opts.mode === 'argv' ? opts.args : [], cwd: opts.cwd, exitCode: 0, signal: null, timedOut: false, stdout: '', stderr: '', durationMs: 20 };
+    }) });
+
+    await adapter.postPullRequestComment({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', body: 'verification evidence' });
+
+    expect(calls[0]).toMatchObject({ mode: 'argv', command: 'gh', cwd: '/repo' });
+    expect(calls[0]?.mode === 'argv' ? calls[0].args : []).toEqual(['pr', 'comment', 'https://github.com/acme/repo/pull/42', '--body', 'verification evidence']);
+  });
 });
