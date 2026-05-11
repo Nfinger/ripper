@@ -43,6 +43,8 @@ symphony run <profile>
 
 ## Install for local development
 
+See `docs/install.md` for the full install and release guide.
+
 ```bash
 git clone git@github.com:Nfinger/ripper.git
 cd ripper
