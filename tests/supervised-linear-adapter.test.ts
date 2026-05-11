@@ -29,6 +29,16 @@ function mockFetch(data: unknown) {
 }
 
 describe('LinearReadAdapter', () => {
+  it('sends Linear API keys in the Authorization header without a Bearer prefix', async () => {
+    const fetchImpl = mockFetch({ issues: { nodes: [] } });
+    const adapter = new LinearReadAdapter({ apiKey: 'lin_api_test', fetchImpl });
+
+    await adapter.findEligibleIssues(profile());
+
+    const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(headers.authorization).toBe('lin_api_test');
+  });
+
   it('finds eligible issues using profile filters and normalizes comments/labels', async () => {
     const fetchImpl = mockFetch({ issues: { nodes: [{ id: 'i1', identifier: 'ENG-1', title: 'Fix thing', description: 'body', url: 'https://linear/ENG-1', assignee: null, state: { name: 'Todo' }, labels: { nodes: [{ name: 'agent' }] }, comments: { nodes: [{ body: 'first' }, { body: 'second' }, { body: 'third' }] } }] } });
     const adapter = new LinearReadAdapter({ apiKey: 'test-token', fetchImpl });
