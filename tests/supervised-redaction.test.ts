@@ -38,6 +38,13 @@ describe('supervised redaction', () => {
     }
   });
 
+  it('allows generic tilde home shorthand in public docs', () => {
+    const result = scanPublicContent('Profiles live under `~/.symphony` in the current implementation.', { surface: 'github' });
+
+    expect(result.ok).toBe(true);
+    expect(result.findings).toEqual([]);
+  });
+
   it('does not treat URL paths as local absolute paths', () => {
     const result = scanPublicContent('Docs: https://example.com/home/docs and https://example.com/tmp/file', { surface: 'github' });
 
