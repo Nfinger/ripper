@@ -32,6 +32,7 @@ describe('buildPrompt', () => {
     expect(result.prompt).toContain('comment one');
     expect(result.prompt).toContain('DO NOT');
     expect(result.prompt).toContain('do not create or push branches');
+    expect(result.prompt).toContain('include the issue key ENG-1 in every commit subject or body');
     expect(result.prompt).toContain('Prefer small changes.');
     expect(result.prompt).toContain('AGENTS.md');
     expect(result.prompt).toContain('[TRUNCATED]');
