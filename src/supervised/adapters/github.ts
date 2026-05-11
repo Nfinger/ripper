@@ -92,6 +92,32 @@ export class GitHubCliAdapter {
   }
 
   async waitForChecks(opts: WaitForChecksOptions): Promise<WaitForChecksResult> {
+    const deadline = Date.now() + opts.timeoutMs;
+    let lastChecks: GitHubCheckRun[] = [];
+
+    while (Date.now() <= deadline) {
+      const remainingMs = Math.max(1, deadline - Date.now());
+      const result = await this.runChecksCommand(opts, remainingMs);
+      if (result.timedOut) {
+        const parsed = parseChecks(result.stdout);
+        return { ok: false, reason: 'ci_timeout', checks: parsed.ok ? applyExplicitCheckNames(parsed.checks, opts.explicitCheckNames ?? []) : lastChecks };
+      }
+
+      const parsed = parseChecks(result.stdout);
+      if (!parsed.ok) return { ok: false, reason: 'ci_failed', checks: lastChecks };
+      const checks = applyExplicitCheckNames(parsed.checks, opts.explicitCheckNames ?? []);
+      lastChecks = checks;
+      const allSelectedPassing = checks.length > 0 && checks.every((check) => check.bucket === 'pass' || check.bucket === 'skipping');
+      if (allSelectedPassing && (opts.explicitCheckNames?.length || result.exitCode === 0)) return { ok: true, checks };
+
+      if (checks.length > 0) return { ok: false, reason: 'ci_failed', checks };
+      await sleep(Math.max(0, opts.intervalSeconds) * 1000);
+    }
+
+    return { ok: false, reason: 'ci_timeout', checks: lastChecks };
+  }
+
+  private async runChecksCommand(opts: WaitForChecksOptions, timeoutMs: number): Promise<CommandResult> {
     const useFailFast = (opts.explicitCheckNames?.length ?? 0) === 0;
     const args = [
       'pr',
@@ -105,15 +131,13 @@ export class GitHubCliAdapter {
       'name,state,bucket,link,workflow',
       ...(opts.requiredOnly ? ['--required'] : []),
     ];
-    const result = await this.commandRunner({ mode: 'argv', command: 'gh', args, cwd: opts.cwd, timeoutMs: opts.timeoutMs });
-    const parsed = parseChecks(result.stdout);
-    if (!parsed.ok) return { ok: false, reason: result.timedOut ? 'ci_timeout' : 'ci_failed', checks: [] };
-    const checks = applyExplicitCheckNames(parsed.checks, opts.explicitCheckNames ?? []);
-    if (result.timedOut) return { ok: false, reason: 'ci_timeout', checks };
-    const allSelectedPassing = checks.length > 0 && checks.every((check) => check.bucket === 'pass' || check.bucket === 'skipping');
-    if (allSelectedPassing && (opts.explicitCheckNames?.length || result.exitCode === 0)) return { ok: true, checks };
-    return { ok: false, reason: 'ci_failed', checks };
+    return this.commandRunner({ mode: 'argv', command: 'gh', args, cwd: opts.cwd, timeoutMs });
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseChecks(stdout: string): { ok: true; checks: GitHubCheckRun[] } | { ok: false } {

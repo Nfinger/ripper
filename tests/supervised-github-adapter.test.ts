@@ -62,6 +62,27 @@ describe('GitHubCliAdapter', () => {
     expect(calls[0]?.mode === 'argv' ? calls[0].args : []).toEqual(['pr', 'checks', 'https://github.com/acme/repo/pull/42', '--watch', '--fail-fast', '--interval', '10', '--json', 'name,state,bucket,link,workflow', '--required']);
   });
 
+  it('keeps polling when GitHub has not attached required checks yet', async () => {
+    let calls = 0;
+    const adapter = new GitHubCliAdapter({ commandRunner: vi.fn(async (opts: RunCommandOptions) => {
+      calls += 1;
+      return {
+        command: opts.command,
+        args: opts.mode === 'argv' ? opts.args : [],
+        cwd: opts.cwd,
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: calls === 1 ? '[]' : '[{"name":"backend-tests","state":"SUCCESS","bucket":"pass"}]',
+        stderr: '',
+        durationMs: 20,
+      };
+    }) });
+
+    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: true, timeoutMs: 60000, intervalSeconds: 0 })).resolves.toEqual({ ok: true, checks: [{ name: 'backend-tests', state: 'SUCCESS', bucket: 'pass' }] });
+    expect(calls).toBe(2);
+  });
+
   it('maps timed out PR checks to ci_timeout', async () => {
     const adapter = new GitHubCliAdapter({ commandRunner: vi.fn(async (opts: RunCommandOptions) => ({ command: opts.command, args: opts.mode === 'argv' ? opts.args : [], cwd: opts.cwd, exitCode: 124, signal: null, timedOut: true, stdout: '[{"name":"backend-tests","state":"PENDING","bucket":"pending"}]', stderr: '', durationMs: 60000 })) });
 
