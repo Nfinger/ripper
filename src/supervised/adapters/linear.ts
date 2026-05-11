@@ -56,9 +56,9 @@ export class LinearReadAdapter {
   }
 
   async getIssueByKey(key: string, profile: SupervisedProfile): Promise<LinearIssue | null> {
-    const data = await this.graphql<{ issues?: { nodes?: unknown[] } }>(ISSUES_QUERY, { filter: { ...buildEligibleFilter(profile), identifier: { eq: key } } });
-    const issues = normalizeIssues(data.issues?.nodes ?? [], profile);
-    return issues[0] ?? null;
+    const data = await this.graphql<{ issue?: unknown }>(ISSUE_BY_ID_QUERY, { id: key });
+    const issue = normalizeIssue(data.issue, profile);
+    return issue && isEligibleIssue(issue, profile) ? issue : null;
   }
 
   async getIssueById(id: string, profile: SupervisedProfile): Promise<LinearIssue | null> {
@@ -173,6 +173,14 @@ function buildEligibleFilter(profile: SupervisedProfile): Record<string, unknown
 
 function normalizeIssues(nodes: unknown[], profile: SupervisedProfile | null): LinearIssue[] {
   return nodes.map((node) => normalizeIssue(node, profile)).filter((issue): issue is LinearIssue => issue !== null);
+}
+
+function isEligibleIssue(issue: LinearIssue, profile: SupervisedProfile): boolean {
+  if (issue.teamKey !== profile.linear.team) return false;
+  if (issue.status !== profile.linear.eligible_status) return false;
+  if (profile.linear.project && issue.projectName !== profile.linear.project) return false;
+  if (profile.linear.require_unassigned && issue.assigneeId !== null) return false;
+  return profile.linear.required_labels.every((label) => issue.labels.includes(label));
 }
 
 function normalizeIssue(node: unknown, profile: SupervisedProfile | null): LinearIssue | null {

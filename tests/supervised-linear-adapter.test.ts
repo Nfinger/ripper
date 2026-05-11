@@ -66,20 +66,21 @@ describe('LinearReadAdapter', () => {
     expect(request.variables.filter.labels).toBeUndefined();
   });
 
-  it('getIssueByKey applies the full profile eligibility filter plus identifier', async () => {
-    const fetchImpl = mockFetch({ issues: { nodes: [] } });
+  it('getIssueByKey fetches by Linear identifier and applies eligibility locally', async () => {
+    const fetchImpl = mockFetch({ issue: { id: 'i1', identifier: 'ENG-404', title: 'Fix thing', description: 'body', url: 'https://linear/ENG-404', assignee: null, state: { name: 'Todo' }, team: { key: 'ENG' }, project: { name: 'Backend' }, labels: { nodes: [{ name: 'agent' }] }, comments: { nodes: [] } } });
+    const adapter = new LinearReadAdapter({ apiKey: 'test-token', fetchImpl });
+
+    await expect(adapter.getIssueByKey('ENG-404', profile({ project: 'Backend', required_labels: ['agent'] }))).resolves.toMatchObject({ key: 'ENG-404' });
+    const request = JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body));
+    expect(request.query).toContain('issue(id: $id)');
+    expect(request.variables).toEqual({ id: 'ENG-404' });
+  });
+
+  it('getIssueByKey returns null when the fetched issue does not satisfy profile eligibility', async () => {
+    const fetchImpl = mockFetch({ issue: { id: 'i1', identifier: 'ENG-404', title: 'Fix thing', description: 'body', url: 'https://linear/ENG-404', assignee: { id: 'someone' }, state: { name: 'Todo' }, team: { key: 'ENG' }, project: { name: 'Backend' }, labels: { nodes: [{ name: 'agent' }] }, comments: { nodes: [] } } });
     const adapter = new LinearReadAdapter({ apiKey: 'test-token', fetchImpl });
 
     await expect(adapter.getIssueByKey('ENG-404', profile({ project: 'Backend', required_labels: ['agent'] }))).resolves.toBeNull();
-    const request = JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body));
-    expect(request.variables.filter).toMatchObject({
-      identifier: { eq: 'ENG-404' },
-      team: { key: { eq: 'ENG' } },
-      state: { name: { eq: 'Todo' } },
-      project: { name: { eq: 'Backend' } },
-      assignee: { null: true },
-    });
-    expect(request.variables.filter.and).toEqual([{ labels: { some: { name: { eq: 'agent' } } } }]);
   });
 
   it('verifies statuses and assignee', async () => {
