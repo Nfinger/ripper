@@ -151,7 +151,7 @@ export class LinearReadAdapter {
     if (!this.apiKey) throw new Error('Linear API key not configured');
     const response = await this.fetchImpl(this.endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
+      headers: { 'content-type': 'application/json', authorization: this.apiKey },
       body: JSON.stringify({ query, variables }),
     });
     if (!response.ok) throw new Error(`Linear GraphQL request failed: HTTP ${response.status}`);
