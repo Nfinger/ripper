@@ -9,6 +9,7 @@ export interface SupervisedProfile {
   linear: LinearConfig;
   agent: AgentConfig;
   prompt: PromptConfig;
+  knowledge: KnowledgeConfig;
   preflight: PreflightConfig;
   agent_review: AgentReviewConfig;
   verification: VerificationConfig;
@@ -64,6 +65,12 @@ export interface PromptConfig {
   include_repo_instruction_files: string[];
   repo_instruction_max_chars: number;
   extra_instructions: string | null;
+}
+
+export interface KnowledgeConfig {
+  enabled: boolean;
+  include: string[];
+  max_bytes: number;
 }
 
 export interface PreflightConfig {

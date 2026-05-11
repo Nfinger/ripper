@@ -9,6 +9,7 @@ import type {
   ChangePolicyConfig,
   CleanupConfig,
   GitHubConfig,
+  KnowledgeConfig,
   LinearConfig,
   PreflightConfig,
   PromptConfig,
@@ -36,6 +37,7 @@ const TOP_LEVEL_KEYS = new Set([
   'linear',
   'agent',
   'prompt',
+  'knowledge',
   'preflight',
   'agent_review',
   'verification',
@@ -106,6 +108,8 @@ function parseProfile(value: unknown, sourcePath: string): ParseResult<Supervise
   if (agentRecord instanceof SupervisedProfileError) return agentRecord;
   const promptRecord = requiredRecord(value, 'prompt', sourcePath);
   if (promptRecord instanceof SupervisedProfileError) return promptRecord;
+  const knowledgeRecord = optionalRecord(value, 'knowledge', sourcePath);
+  if (knowledgeRecord instanceof SupervisedProfileError) return knowledgeRecord;
   const preflightRecord = requiredRecord(value, 'preflight', sourcePath);
   if (preflightRecord instanceof SupervisedProfileError) return preflightRecord;
   const agentReviewRecord = optionalRecord(value, 'agent_review', sourcePath);
@@ -133,6 +137,8 @@ function parseProfile(value: unknown, sourcePath: string): ParseResult<Supervise
   if (agent instanceof SupervisedProfileError) return agent;
   const prompt = parsePrompt(promptRecord, sourcePath);
   if (prompt instanceof SupervisedProfileError) return prompt;
+  const knowledge = parseKnowledge(knowledgeRecord, sourcePath);
+  if (knowledge instanceof SupervisedProfileError) return knowledge;
   const preflight = parsePreflight(preflightRecord, sourcePath);
   if (preflight instanceof SupervisedProfileError) return preflight;
   const agentReview = parseAgentReview(agentReviewRecord, sourcePath);
@@ -152,7 +158,7 @@ function parseProfile(value: unknown, sourcePath: string): ParseResult<Supervise
   const cleanup = parseCleanup(cleanupRecord, sourcePath);
   if (cleanup instanceof SupervisedProfileError) return cleanup;
 
-  return { schema_version: 1, name, repo, linear, agent, prompt, preflight, agent_review: agentReview, verification, validation, change_policy: changePolicy, git, github, run, cleanup };
+  return { schema_version: 1, name, repo, linear, agent, prompt, knowledge, preflight, agent_review: agentReview, verification, validation, change_policy: changePolicy, git, github, run, cleanup };
 }
 
 function parseRepo(record: Record<string, unknown>, sourcePath: string): ParseResult<RepoConfig> {
@@ -243,6 +249,21 @@ function parsePrompt(record: Record<string, unknown>, sourcePath: string): Parse
   if (extraValue !== null && typeof extraValue !== 'string') return invalid(sourcePath, 'prompt.extra_instructions');
   const extra = extraValue;
   return { include_repo_instruction_files: files, repo_instruction_max_chars: maxChars, extra_instructions: extra };
+}
+
+function parseKnowledge(record: Record<string, unknown> | null, sourcePath: string): ParseResult<KnowledgeConfig> {
+  if (record === null) return { enabled: false, include: [], max_bytes: 80000 };
+  const enabled = requiredBoolean(record, 'enabled', sourcePath, 'knowledge.enabled');
+  if (enabled instanceof SupervisedProfileError) return enabled;
+  const include = requiredStringArray(record, 'include', sourcePath, 'knowledge.include');
+  if (include instanceof SupervisedProfileError) return include;
+  for (const [index, item] of include.entries()) {
+    if (path.isAbsolute(item) || item.split(/[\\/]+/u).includes('..')) return invalid(sourcePath, `knowledge.include.${index}`);
+  }
+  const maxBytes = requiredNumber(record, 'max_bytes', sourcePath, 'knowledge.max_bytes');
+  if (maxBytes instanceof SupervisedProfileError) return maxBytes;
+  if (!Number.isInteger(maxBytes) || maxBytes < 0) return invalid(sourcePath, 'knowledge.max_bytes');
+  return { enabled, include, max_bytes: maxBytes };
 }
 
 function parsePreflight(record: Record<string, unknown>, sourcePath: string): ParseResult<PreflightConfig> {

@@ -87,6 +87,9 @@ describe('runRealRun', () => {
     expect(deps.codex.run).toHaveBeenCalled();
     expect(deps.reviewer.run).toHaveBeenCalled();
     expect(await readFile(path.join(result.run.run_dir, 'agent-review.md'), 'utf8')).toContain('APPROVED');
+    const reviewPrompt = await readFile(path.join(result.run.run_dir, 'agent-review-prompt.md'), 'utf8');
+    expect(reviewPrompt).toContain('Documentation impact');
+    expect(reviewPrompt).toContain('Living docs policy');
     expect(deps.git.newCommits).toHaveBeenCalledWith(expect.stringContaining(path.join(homeDir, '.symphony', 'worktrees')), 'b'.repeat(40), 'HEAD');
     expect(await readFile(path.join(result.run.run_dir, 'diff-summary.md'), 'utf8')).toContain('ENG-1 implement thing');
     expect(await readFile(path.join(result.run.run_dir, 'result.md'), 'utf8')).toContain('Manual inspection required');

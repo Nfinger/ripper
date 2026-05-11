@@ -385,6 +385,8 @@ function buildAgentReviewPrompt(opts: { issue: LinearIssue; diffSummary: string 
     '- Correctness: obvious logic, integration, migration, and edge-case issues.',
     '- Safety: no secrets, unsafe paths, auth leakage, or public-artifact leakage.',
     '- Tests: changed behavior is covered or the gap is clearly justified.',
+    '- Documentation impact: verify that specs, ADRs, user flows, API/contract docs, runbooks, and developer docs in the target repo were updated when the committed behavior changed them.',
+    '- Living docs policy: approved specs may supersede stale behavior docs, but the implementation must update those docs; hard security/compliance/architecture constraints require explicit authorization to change.',
     '',
     '## Diff summary',
     opts.diffSummary.trim() || '(No diff summary available.)',

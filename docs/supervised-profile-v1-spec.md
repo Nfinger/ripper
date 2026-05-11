@@ -190,6 +190,25 @@ prompt:
 # REQUEST_CHANGES triggers up to max_fix_attempts autonomous implementation remediation attempts,
 # each followed by commit/change-policy checks and another independent review.
 
+knowledge:
+  enabled: true
+  include:
+    - PROJECT-BRIEF.md
+    - docs/specs/*.md
+    - docs/adr/*.md
+    - docs/architecture/*.md
+    - docs/user-flows/*.md
+    - docs/development/*.md
+    - docs/runbooks/*.md
+    - docs/verification/*.md
+    - docs/api/*.md
+  max_bytes: 80000
+
+# knowledge is repo-local project context from the target repo, not Symphony/Ripper.
+# Specs under docs/specs/ are durable implementation contracts for agent runs.
+# Durable docs are living context: behavior docs should be updated when specs change behavior;
+# hard security/compliance/architecture/ADR constraints require explicit authorization to change.
+
 preflight:
   require_main_checkout_clean: true
   require_main_checkout_on_base_branch: true
@@ -282,7 +301,41 @@ cleanup:
 - `linear.failure_status` defaults to `null` and means no automatic failure status move.
 - `linear.assignee` must be explicit, even for `authenticated_user`.
 - `agent.kind` must be `codex` in v1.
+- `knowledge` is optional; omitted profiles default it to disabled with an empty include list and `max_bytes: 80000`.
+- `knowledge.include` entries are repo-relative file paths or simple `*.md` directory globs. Absolute paths and `..` escapes are rejected.
+- Knowledge files are realpath-checked before injection; files or symlinks resolving outside the target repo are skipped.
+- `knowledge.max_bytes` must be a non-negative integer and bounds injected UTF-8 content bytes across included knowledge files.
 - Unknown profile keys should fail validation unless deliberately reserved.
+
+---
+
+## Project Knowledge Center
+
+Symphony can inject bounded repo-local project knowledge into implementation prompts via the `knowledge` profile section. This is intentionally sourced from the target project repo, not from Symphony/Ripper, so the project remains inheritable by humans and future agents.
+
+Recommended target-repo layout:
+
+```text
+PROJECT-BRIEF.md
+AGENTS.md
+docs/specs/<ticket-or-date>-<feature>.md
+docs/adr/<number>-<decision>.md
+docs/architecture/*.md
+docs/user-flows/*.md
+docs/development/*.md
+docs/runbooks/*.md
+docs/verification/*.md
+docs/api/*.md
+```
+
+Operating rules:
+
+- `docs/specs/` contains durable specs created by the human + planning assistant before autonomous implementation. The active spec is the implementation contract for that run.
+- Durable docs are living context. If an approved spec intentionally changes behavior described in user-flow/product/API docs, the implementation agent should update those docs in the same change.
+- Hard constraints — security, compliance, architecture invariants, and accepted ADRs — require explicit authorization to change. If the spec conflicts with them without authorization, the agent should stop or request clarification.
+- Run artifacts under `~/.symphony/runs/<run_id>/` remain operational audit records, not project documentation.
+- Injected docs are delimited as contextual project knowledge; they may contain instruction-like examples, but they must not override Symphony DO NOT rules, safety rules, path restrictions, or output contracts.
+- Agent final responses must include `DOCUMENTATION_IMPACT`, and independent review treats missing doc updates as a blocking review concern.
 
 ---
 

@@ -172,6 +172,29 @@ prompt:
   include_repo_instruction_files: []
   repo_instruction_max_chars: 20000
   extra_instructions: null
+knowledge:
+  enabled: true
+  include:
+    - PROJECT-BRIEF.md
+    - docs/specs/*.md
+    - docs/adr/*.md
+    - docs/architecture/*.md
+    - docs/user-flows/*.md
+    - docs/development/*.md
+    - docs/runbooks/*.md
+    - docs/verification/*.md
+    - docs/api/*.md
+  max_bytes: 80000
+agent_review:
+  enabled: true
+  command: codex
+  model: null
+  timeout_seconds: 300
+  max_fix_attempts: 2
+verification:
+  enabled: false
+  mode: generic_smoke
+  commands: []
 preflight:
   require_main_checkout_clean: true
   require_main_checkout_on_base_branch: true
