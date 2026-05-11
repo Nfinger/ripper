@@ -104,7 +104,13 @@ export class GitHubCliAdapter {
       }
 
       const parsed = parseChecks(result.stdout);
-      if (!parsed.ok) return { ok: false, reason: 'ci_failed', checks: lastChecks };
+      if (!parsed.ok) {
+        if (isNoChecksYet(result)) {
+          await sleep(Math.max(0, opts.intervalSeconds) * 1000);
+          continue;
+        }
+        return { ok: false, reason: 'ci_failed', checks: lastChecks };
+      }
       const checks = applyExplicitCheckNames(parsed.checks, opts.explicitCheckNames ?? []);
       lastChecks = checks;
       const allSelectedPassing = checks.length > 0 && checks.every((check) => check.bucket === 'pass' || check.bucket === 'skipping');
@@ -133,6 +139,10 @@ export class GitHubCliAdapter {
     ];
     return this.commandRunner({ mode: 'argv', command: 'gh', args, cwd: opts.cwd, timeoutMs });
   }
+}
+
+function isNoChecksYet(result: CommandResult): boolean {
+  return result.stdout.trim().length === 0 && /no checks|checks? reported|not found/i.test(result.stderr);
 }
 
 function sleep(ms: number): Promise<void> {
