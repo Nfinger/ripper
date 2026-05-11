@@ -56,10 +56,10 @@ describe('GitHubCliAdapter', () => {
       return { command: opts.command, args: opts.mode === 'argv' ? opts.args : [], cwd: opts.cwd, exitCode: 0, signal: null, timedOut: false, stdout: '[{"name":"backend-tests","state":"SUCCESS","bucket":"pass","link":"https://github.com/acme/repo/actions/runs/1"}]', stderr: '', durationMs: 20 };
     }) });
 
-    const result = await adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: true, timeoutMs: 60000, intervalSeconds: 10 });
+    const result = await adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: true, timeoutMs: 60000, intervalSeconds: 0 });
 
     expect(result).toEqual({ ok: true, checks: [{ name: 'backend-tests', state: 'SUCCESS', bucket: 'pass', link: 'https://github.com/acme/repo/actions/runs/1' }] });
-    expect(calls[0]?.mode === 'argv' ? calls[0].args : []).toEqual(['pr', 'checks', 'https://github.com/acme/repo/pull/42', '--watch', '--fail-fast', '--interval', '10', '--json', 'name,state,bucket,link,workflow', '--required']);
+    expect(calls[0]?.mode === 'argv' ? calls[0].args : []).toEqual(['pr', 'checks', 'https://github.com/acme/repo/pull/42', '--watch', '--fail-fast', '--interval', '0', '--json', 'name,state,bucket,link,workflow', '--required']);
   });
 
   it('keeps polling when GitHub has not attached required checks yet', async () => {
@@ -107,13 +107,13 @@ describe('GitHubCliAdapter', () => {
   it('maps timed out PR checks to ci_timeout', async () => {
     const adapter = new GitHubCliAdapter({ commandRunner: vi.fn(async (opts: RunCommandOptions) => ({ command: opts.command, args: opts.mode === 'argv' ? opts.args : [], cwd: opts.cwd, exitCode: 124, signal: null, timedOut: true, stdout: '[{"name":"backend-tests","state":"PENDING","bucket":"pending"}]', stderr: '', durationMs: 60000 })) });
 
-    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: true, timeoutMs: 60000, intervalSeconds: 10 })).resolves.toEqual({ ok: false, reason: 'ci_timeout', checks: [{ name: 'backend-tests', state: 'PENDING', bucket: 'pending' }] });
+    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: true, timeoutMs: 60000, intervalSeconds: 0 })).resolves.toEqual({ ok: false, reason: 'ci_timeout', checks: [{ name: 'backend-tests', state: 'PENDING', bucket: 'pending' }] });
   });
 
   it('does not treat invalid check JSON as CI success', async () => {
     const adapter = new GitHubCliAdapter({ commandRunner: vi.fn(async (opts: RunCommandOptions) => ({ command: opts.command, args: opts.mode === 'argv' ? opts.args : [], cwd: opts.cwd, exitCode: 0, signal: null, timedOut: false, stdout: 'not-json', stderr: '', durationMs: 20 })) });
 
-    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: true, timeoutMs: 60000, intervalSeconds: 10 })).resolves.toMatchObject({ ok: false, reason: 'ci_failed' });
+    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: true, timeoutMs: 60000, intervalSeconds: 0 })).resolves.toMatchObject({ ok: false, reason: 'ci_failed' });
   });
 
   it('enforces explicit required check names and ignores unrelated optional failures', async () => {
@@ -133,13 +133,13 @@ describe('GitHubCliAdapter', () => {
       };
     }) });
 
-    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: false, explicitCheckNames: ['backend-tests'], timeoutMs: 60000, intervalSeconds: 10 })).resolves.toEqual({ ok: true, checks: [{ name: 'backend-tests', state: 'SUCCESS', bucket: 'pass' }] });
+    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: false, explicitCheckNames: ['backend-tests'], timeoutMs: 60000, intervalSeconds: 0 })).resolves.toEqual({ ok: true, checks: [{ name: 'backend-tests', state: 'SUCCESS', bucket: 'pass' }] });
     expect(calls[0]?.mode === 'argv' ? calls[0].args : []).not.toContain('--fail-fast');
   });
 
   it('fails when an explicitly required check is missing from gh output', async () => {
     const adapter = new GitHubCliAdapter({ commandRunner: vi.fn(async (opts: RunCommandOptions) => ({ command: opts.command, args: opts.mode === 'argv' ? opts.args : [], cwd: opts.cwd, exitCode: 0, signal: null, timedOut: false, stdout: '[{"name":"backend-tests","state":"SUCCESS","bucket":"pass"}]', stderr: '', durationMs: 20 })) });
 
-    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: false, explicitCheckNames: ['backend-tests', 'frontend-build'], timeoutMs: 60000, intervalSeconds: 10 })).resolves.toEqual({ ok: false, reason: 'ci_failed', checks: [{ name: 'backend-tests', state: 'SUCCESS', bucket: 'pass' }, { name: 'frontend-build', state: 'missing', bucket: 'fail' }] });
+    await expect(adapter.waitForChecks({ cwd: '/repo', prUrl: 'https://github.com/acme/repo/pull/42', requiredOnly: false, explicitCheckNames: ['backend-tests', 'frontend-build'], timeoutMs: 60000, intervalSeconds: 0 })).resolves.toEqual({ ok: false, reason: 'ci_failed', checks: [{ name: 'backend-tests', state: 'SUCCESS', bucket: 'pass' }, { name: 'frontend-build', state: 'missing', bucket: 'fail' }] });
   });
 });
