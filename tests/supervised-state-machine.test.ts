@@ -22,6 +22,12 @@ describe('run state machine', () => {
     expect(() => assertTransitionAllowed('preflight_failed', 'handoff_running')).toThrow(TransitionError);
   });
 
+  it('allows review remediation loop transitions', () => {
+    expect(() => assertTransitionAllowed('code_review_running', 'review_remediation_running')).not.toThrow();
+    expect(() => assertTransitionAllowed('review_remediation_running', 'review_remediation_completed')).not.toThrow();
+    expect(() => assertTransitionAllowed('review_remediation_completed', 'code_review_running')).not.toThrow();
+  });
+
   it('transitionRun writes a transition event and updates run.json', async () => {
     const homeDir = await tempHome();
     const run = await createRunRecord({ homeDir, runId: 'run-1', profileName: 'default', profileHash: 'abc123', issueKey: 'ENG-123', mutating: true, now: new Date('2026-05-10T07:45:09.123Z') });

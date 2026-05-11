@@ -44,6 +44,7 @@ export interface RealRunClients {
   github: RealRunGitHubClient;
   codexReadiness: CodexPreflightClient;
   codex: CodexPhaseCodexClient;
+  reviewer: CodexPhaseCodexClient;
   validation: ValidationRunnerClient;
 }
 
@@ -260,7 +261,7 @@ async function runPostClaimCodexSlice(opts: { opts: RunRealRunOptions; run: RunR
       return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Codex failed: ${reason}` };
     }
 
-    const check = await checkCodexChanges({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, worktreePath: codex.worktreePath, baseSha, git: clients.git });
+    let check = await checkCodexChanges({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, worktreePath: codex.worktreePath, baseSha, git: clients.git });
     if (!check.ok) {
       const reason = (check as { ok: false; reason: RunReason }).reason;
       await postFailureComment({ runDir: run.run_dir, runId: run.run_id, issue, linear: clients.linear, profile, reason });
@@ -268,8 +269,45 @@ async function runPostClaimCodexSlice(opts: { opts: RunRealRunOptions; run: RunR
       return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Post-Codex checks failed: ${reason}` };
     }
 
+    let fixAttempt = 0;
+    while (true) {
+      const review = await runAgentReviewPhase({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, issue, worktreePath: codex.worktreePath, codex: clients.reviewer, git: clients.git });
+      if (review.ok === true) break;
+      if (review.requestChanges === true && fixAttempt < profile.agent_review.max_fix_attempts) {
+        fixAttempt += 1;
+        const remediation = await runReviewRemediationPhase({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, issue, worktreePath: codex.worktreePath, codex: clients.codex, reviewText: review.reviewText, attempt: fixAttempt });
+        if (remediation.ok === false) {
+          await postFailureComment({ runDir: run.run_dir, runId: run.run_id, issue, linear: clients.linear, profile, reason: remediation.reason });
+          await writeFileAtomic(path.join(run.run_dir, 'result.md'), `# Symphony review remediation failed\n\nReason: ${remediation.reason}\n`);
+          return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Review remediation failed: ${remediation.reason}` };
+        }
+        check = await checkCodexChanges({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, worktreePath: codex.worktreePath, baseSha, git: clients.git });
+        if (!check.ok) {
+          const reason = (check as { ok: false; reason: RunReason }).reason;
+          await postFailureComment({ runDir: run.run_dir, runId: run.run_id, issue, linear: clients.linear, profile, reason });
+          await writeFileAtomic(path.join(run.run_dir, 'result.md'), `# Symphony post-remediation checks failed\n\nReason: ${reason}\n`);
+          return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Post-remediation checks failed: ${reason}` };
+        }
+        continue;
+      }
+      const latest = await readRunById(opts.opts.homeDir, run.run_id);
+      if (latest.status !== 'failed' && latest.status !== 'timed_out') {
+        await transitionRun({ homeDir: opts.opts.homeDir }, run.run_id, 'failed', review.reason);
+      }
+      await postFailureComment({ runDir: run.run_dir, runId: run.run_id, issue, linear: clients.linear, profile, reason: review.reason });
+      await writeFileAtomic(path.join(run.run_dir, 'result.md'), `# Symphony agent review failed\n\nReason: ${review.reason}\n`);
+      return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Agent review failed: ${review.reason}` };
+    }
+
+    const smoke = await runSmokeVerificationPhase({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, issue, worktreePath: codex.worktreePath, git: clients.git, verification: clients.validation, linear: clients.linear });
+    if (smoke.ok === false) {
+      await postFailureComment({ runDir: run.run_dir, runId: run.run_id, issue, linear: clients.linear, profile, reason: smoke.reason });
+      await writeFileAtomic(path.join(run.run_dir, 'result.md'), `# Symphony smoke verification failed\n\nReason: ${smoke.reason}\n`);
+      return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Smoke verification failed: ${smoke.reason}` };
+    }
+
     if (profile.validation.commands.length === 0) {
-      await writeFileAtomic(path.join(run.run_dir, 'result.md'), ['# Symphony Codex slice complete', '', `Issue: ${issue.key}`, `Branch: ${actualBranch}`, `Worktree: ${codex.worktreePath}`, '', 'Manual inspection required before validation, push, PR, CI, or Linear handoff.', ''].join('\n'));
+      await writeFileAtomic(path.join(run.run_dir, 'result.md'), ['# Symphony Codex slice complete', '', `Issue: ${issue.key}`, `Branch: ${actualBranch}`, `Worktree: ${codex.worktreePath}`, '', 'Agent review completed. Manual inspection required before validation, push, PR, CI, or Linear handoff.', ''].join('\n'));
       return { exitCode: EXIT_SUCCEEDED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Codex slice complete for ${issue.key}; manual inspection required` };
     }
 
@@ -278,7 +316,7 @@ async function runPostClaimCodexSlice(opts: { opts: RunRealRunOptions; run: RunR
   } catch (error) {
     const reason: RunReason = 'post_claim_unhandled_error';
     const current = await readRunById(opts.opts.homeDir, run.run_id);
-    if (current.status === 'claimed' || current.status === 'codex_running' || current.status === 'codex_completed' || current.status === 'validation_running' || current.status === 'validation_completed' || current.status === 'handoff_running' || current.status === 'pr_created' || current.status === 'ci_running') {
+    if (current.status === 'claimed' || current.status === 'codex_running' || current.status === 'codex_completed' || current.status === 'code_review_running' || current.status === 'review_remediation_running' || current.status === 'review_remediation_completed' || current.status === 'code_review_completed' || current.status === 'verification_running' || current.status === 'verification_completed' || current.status === 'validation_running' || current.status === 'validation_completed' || current.status === 'handoff_running' || current.status === 'pr_created' || current.status === 'ci_running') {
       await transitionRun({ homeDir: opts.opts.homeDir }, run.run_id, 'failed', reason);
     }
     await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: run.run_id, timestamp: new Date().toISOString(), type: 'warning', data: { warning: 'post_claim_unhandled_error', error: redactShareableText(error instanceof Error ? error.message : String(error)) } });
@@ -286,6 +324,167 @@ async function runPostClaimCodexSlice(opts: { opts: RunRealRunOptions; run: RunR
     await writeFileAtomic(path.join(run.run_dir, 'result.md'), `# Symphony post-claim step failed\n\nReason: ${reason}\n`);
     return { exitCode: EXIT_CODEX_FAILED, run: await readRunById(opts.opts.homeDir, run.run_id), message: `Post-claim step failed: ${reason}` };
   }
+}
+
+
+type GateResult = { ok: true } | { ok: false; reason: RunReason };
+type ReviewGateResult = { ok: true } | { ok: false; reason: RunReason; requestChanges?: false } | { ok: false; reason: 'code_review_failed'; requestChanges: true; reviewText: string };
+
+async function runAgentReviewPhase(opts: { homeDir: string; runId: string; profile: SupervisedProfile; issue: LinearIssue; worktreePath: string; codex: CodexPhaseCodexClient; git: RealRunGitClient }): Promise<ReviewGateResult> {
+  if (!opts.profile.agent_review.enabled) return { ok: true };
+  const run = await readRunById(opts.homeDir, opts.runId);
+  await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'code_review_running');
+  const diffSummary = await readOptionalFile(path.join(run.run_dir, 'diff-summary.md'));
+  const prompt = buildAgentReviewPrompt({ issue: opts.issue, diffSummary });
+  const promptPath = path.join(run.run_dir, 'agent-review-prompt.md');
+  const rawLogPath = path.join(run.run_dir, 'agent-review.log');
+  const redactedLogPath = path.join(run.run_dir, 'agent-review.redacted.log');
+  const finalPath = path.join(run.run_dir, 'agent-review.md');
+  await writeFileAtomic(promptPath, prompt);
+  await addArtifacts(run.run_dir, [
+    { path: promptPath, visibility: 'local_only', kind: 'agent_review_prompt' },
+    { path: rawLogPath, visibility: 'local_only', kind: 'agent_review_raw_log' },
+    { path: redactedLogPath, visibility: 'redacted_shareable', kind: 'agent_review_redacted_log' },
+  ]);
+  const agent = { ...opts.profile.agent, command: opts.profile.agent_review.command, model: opts.profile.agent_review.model ?? opts.profile.agent.model, timeout_minutes: Math.max(1, Math.ceil(opts.profile.agent_review.timeout_seconds / 60)) };
+  const result = await opts.codex.run({ cwd: opts.worktreePath, promptPath, rawLogPath, redactedLogPath, agent, recordEvent: async (event) => appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: `agent_review_${event.type}`, ...event.data } }) });
+  if (!result.ok) {
+    await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'code_review_failed');
+    return { ok: false, reason: 'code_review_failed' };
+  }
+  await writeFileAtomic(finalPath, redactShareableText(result.finalText));
+  await addArtifacts(run.run_dir, [{ path: finalPath, visibility: 'redacted_shareable', kind: 'agent_review_final' }]);
+  await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'artifact', data: { artifacts: ['agent-review.md'] } });
+  const finalLine = result.finalText.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1)?.toUpperCase() ?? '';
+  const dirty = await opts.git.statusPorcelain(opts.worktreePath);
+  if (dirty.trim().length > 0) {
+    await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'dirty_worktree_after_review');
+    return { ok: false, reason: 'dirty_worktree_after_review' };
+  }
+  if (finalLine.startsWith('REQUEST_CHANGES')) {
+    return { ok: false, reason: 'code_review_failed', requestChanges: true, reviewText: redactShareableText(result.finalText) };
+  }
+  if (!finalLine.startsWith('APPROVED')) {
+    await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'code_review_failed');
+    return { ok: false, reason: 'code_review_failed' };
+  }
+  await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'code_review_completed');
+  return { ok: true };
+}
+
+function buildAgentReviewPrompt(opts: { issue: LinearIssue; diffSummary: string }): string {
+  return [
+    '# Symphony Required Agent Code Review',
+    '',
+    'You are a second, independent code-review agent. Review the committed diff only; do not edit files, commit, push, create PRs, or post external comments.',
+    '',
+    `Linear issue: ${opts.issue.key} ${opts.issue.title}`,
+    '',
+    '## Required checks',
+    '- Spec fit: implementation addresses the issue without scope creep.',
+    '- Correctness: obvious logic, integration, migration, and edge-case issues.',
+    '- Safety: no secrets, unsafe paths, auth leakage, or public-artifact leakage.',
+    '- Tests: changed behavior is covered or the gap is clearly justified.',
+    '- Documentation impact: verify that specs, ADRs, user flows, API/contract docs, runbooks, and developer docs in the target repo were updated when the committed behavior changed them.',
+    '- Living docs policy: approved specs may supersede stale behavior docs, but the implementation must update those docs; hard security/compliance/architecture constraints require explicit authorization to change.',
+    '',
+    '## Diff summary',
+    opts.diffSummary.trim() || '(No diff summary available.)',
+    '',
+    '## Output contract',
+    'Start the final line with exactly one of:',
+    '- APPROVED — no blocking issues found.',
+    '- REQUEST_CHANGES — blocking issues found, followed by bullets.',
+    '',
+  ].join('\n');
+}
+
+async function runReviewRemediationPhase(opts: { homeDir: string; runId: string; profile: SupervisedProfile; issue: LinearIssue; worktreePath: string; codex: CodexPhaseCodexClient; reviewText: string; attempt: number }): Promise<GateResult> {
+  const run = await readRunById(opts.homeDir, opts.runId);
+  await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'review_remediation_running');
+  const diffSummary = await readOptionalFile(path.join(run.run_dir, 'diff-summary.md'));
+  const prompt = buildReviewRemediationPrompt({ issue: opts.issue, reviewText: opts.reviewText, diffSummary, attempt: opts.attempt, maxAttempts: opts.profile.agent_review.max_fix_attempts });
+  const prefix = `review-remediation-${opts.attempt}`;
+  const promptPath = path.join(run.run_dir, `${prefix}-prompt.md`);
+  const rawLogPath = path.join(run.run_dir, `${prefix}.log`);
+  const redactedLogPath = path.join(run.run_dir, `${prefix}.redacted.log`);
+  const finalPath = path.join(run.run_dir, `${prefix}-final.md`);
+  await writeFileAtomic(promptPath, prompt);
+  await addArtifacts(run.run_dir, [
+    { path: promptPath, visibility: 'local_only', kind: 'review_remediation_prompt' },
+    { path: rawLogPath, visibility: 'local_only', kind: 'review_remediation_raw_log' },
+    { path: redactedLogPath, visibility: 'redacted_shareable', kind: 'review_remediation_redacted_log' },
+  ]);
+  const result = await opts.codex.run({ cwd: opts.worktreePath, promptPath, rawLogPath, redactedLogPath, agent: opts.profile.agent, recordEvent: async (event) => appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: `review_remediation_${event.type}`, attempt: opts.attempt, ...event.data } }) });
+  if (!result.ok) {
+    const reason = (result as { ok: false; reason: RunReason }).reason;
+    await transitionRun({ homeDir: opts.homeDir }, opts.runId, reason === 'codex_timeout' ? 'timed_out' : 'failed', reason);
+    return { ok: false, reason };
+  }
+  await writeFileAtomic(finalPath, redactShareableText(result.finalText));
+  await addArtifacts(run.run_dir, [{ path: finalPath, visibility: 'redacted_shareable', kind: 'review_remediation_final' }]);
+  await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'artifact', data: { artifacts: [`${prefix}-prompt.md`, `${prefix}.log`, `${prefix}.redacted.log`, `${prefix}-final.md`] } });
+  await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'review_remediation_completed');
+  return { ok: true };
+}
+
+function buildReviewRemediationPrompt(opts: { issue: LinearIssue; reviewText: string; diffSummary: string; attempt: number; maxAttempts: number }): string {
+  return [
+    '# Symphony Review Remediation',
+    '',
+    'You are the implementation agent continuing the existing worktree after an independent reviewer requested changes.',
+    'Address only the blocking review findings. Do not push, create PRs, or post external comments.',
+    'Commit your remediation before exiting; the commit message must reference the Linear issue key.',
+    '',
+    `Linear issue: ${opts.issue.key} ${opts.issue.title}`,
+    `Remediation attempt: ${opts.attempt} of ${opts.maxAttempts}`,
+    '',
+    '## Review findings to fix',
+    opts.reviewText.trim() || '(No review text available.)',
+    '',
+    '## Current diff summary',
+    opts.diffSummary.trim() || '(No diff summary available.)',
+    '',
+  ].join('\n');
+}
+
+async function runSmokeVerificationPhase(opts: { homeDir: string; runId: string; profile: SupervisedProfile; issue: LinearIssue; worktreePath: string; git: RealRunGitClient; verification: ValidationRunnerClient; linear: RealRunLinearClient }): Promise<GateResult> {
+  if (!opts.profile.verification.enabled) return { ok: true };
+  const run = await readRunById(opts.homeDir, opts.runId);
+  await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'verification_running');
+  const commands = opts.profile.verification.commands;
+  const results: Array<{ name: string; status: 'passed' | 'failed'; exitCode: number; timedOut: boolean; durationMs: number; mode: string }> = [];
+  if (commands.length === 0) {
+    await writeVerificationSummary(run.run_dir, opts.runId, opts.profile.verification.mode, results);
+    await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'smoke_verification_failed');
+    return { ok: false, reason: 'smoke_verification_failed' };
+  }
+  for (const [index, command] of commands.entries()) {
+    const rawLogPath = path.join(run.run_dir, `verification-${index + 1}-${safeSegment(command.name)}.log`);
+    const redactedLogPath = path.join(run.run_dir, `verification-${index + 1}-${safeSegment(command.name)}.redacted.log`);
+    const result = await opts.verification.run(buildValidationCommand(command, opts.worktreePath, rawLogPath, redactedLogPath));
+    await addArtifacts(run.run_dir, [
+      { path: rawLogPath, visibility: 'local_only', kind: 'verification_raw_log' },
+      { path: redactedLogPath, visibility: 'redacted_shareable', kind: 'verification_redacted_log' },
+    ]);
+    await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: 'smoke_verification_command_finished', name: command.name, mode: opts.profile.verification.mode, exit_code: result.exitCode, timed_out: result.timedOut, duration_ms: result.durationMs } });
+    const status = result.exitCode === 0 && !result.timedOut && !result.finalizationError ? 'passed' : 'failed';
+    results.push({ name: command.name, status, exitCode: result.exitCode, timedOut: result.timedOut, durationMs: result.durationMs, mode: opts.profile.verification.mode });
+    if (status === 'failed') {
+      await writeVerificationSummary(run.run_dir, opts.runId, opts.profile.verification.mode, results);
+      await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'smoke_verification_failed');
+      return { ok: false, reason: 'smoke_verification_failed' };
+    }
+  }
+  const dirty = await opts.git.statusPorcelain(opts.worktreePath);
+  if (dirty.trim().length > 0) {
+    await writeVerificationSummary(run.run_dir, opts.runId, opts.profile.verification.mode, results, dirty);
+    await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'dirty_worktree_after_verification');
+    return { ok: false, reason: 'dirty_worktree_after_verification' };
+  }
+  await writeVerificationSummary(run.run_dir, opts.runId, opts.profile.verification.mode, results);
+  await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'verification_completed');
+  return { ok: true };
 }
 
 async function runValidationPhase(opts: { homeDir: string; runId: string; profile: SupervisedProfile; issue: LinearIssue; branch: string; worktreePath: string; git: RealRunGitClient; github: RealRunGitHubClient; validation: ValidationRunnerClient; linear: RealRunLinearClient }): Promise<RunRealRunResult> {
@@ -481,10 +680,18 @@ function buildGithubVisiblePrTitle(issue: LinearIssue): string {
 async function buildPrBody(opts: { runDir: string; issue: LinearIssue; branch: string; maxChars: number }): Promise<string> {
   const diffSummary = await readOptionalFile(path.join(opts.runDir, 'diff-summary.md'));
   const validationSummary = await readOptionalFile(path.join(opts.runDir, 'validation-summary.md'));
+  const reviewSummary = await readOptionalFile(path.join(opts.runDir, 'agent-review.md'));
+  const verificationSummary = await readOptionalFile(path.join(opts.runDir, 'verification-summary.md'));
   const raw = [
     `## Summary`,
     `- Symphony implementation for ${opts.issue.key}: ${opts.issue.title}`,
     `- Branch: ${opts.branch}`,
+    '',
+    '## Agent Review',
+    reviewSummary.trim() || '- No agent review summary available',
+    '',
+    '## Smoke Verification',
+    verificationSummary.trim() || '- No smoke verification summary available',
     '',
     '## Validation',
     validationSummary.trim() || '- No validation summary available',
@@ -529,6 +736,22 @@ function buildValidationCommand(command: ValidationCommand, cwd: string, rawLogP
     return { ...base, mode: 'argv', command: executable, args };
   }
   return { ...base, mode: 'shell', command: command.shell };
+}
+
+async function writeVerificationSummary(runDir: string, runId: string, mode: string, results: Array<{ name: string; status: 'passed' | 'failed'; exitCode: number; timedOut: boolean; durationMs: number; mode: string }>, dirtyStatus?: string): Promise<void> {
+  const jsonPath = path.join(runDir, 'verification-summary.json');
+  const mdPath = path.join(runDir, 'verification-summary.md');
+  await writeJsonAtomic(jsonPath, { schema_version: 1, run_id: runId, mode, results, dirty_status: dirtyStatus ?? null });
+  const lines = ['# Smoke Verification Summary', '', `Mode: ${mode}`, ''];
+  if (results.length === 0) lines.push('- No smoke verification commands configured');
+  for (const result of results) lines.push(`- ${result.name}: ${result.status} (exit ${result.exitCode}${result.timedOut ? ', timed out' : ''}, ${result.durationMs}ms)`);
+  if (dirtyStatus) lines.push('', '## Dirty worktree after smoke verification', '', '```', dirtyStatus.trim(), '```');
+  await writeFileAtomic(mdPath, `${lines.join('\n')}\n`);
+  await addArtifacts(runDir, [
+    { path: jsonPath, visibility: 'local_only', kind: 'verification_summary_json' },
+    { path: mdPath, visibility: 'redacted_shareable', kind: 'verification_summary_markdown' },
+  ]);
+  await appendEvent(runDir, { schema_version: 1, event_id: randomUUID(), run_id: runId, timestamp: new Date().toISOString(), type: 'artifact', data: { artifacts: ['verification-summary.json', 'verification-summary.md'] } });
 }
 
 async function writeValidationSummary(runDir: string, runId: string, results: Array<{ name: string; status: 'passed' | 'failed'; exitCode: number; timedOut: boolean; durationMs: number }>, dirtyStatus?: string): Promise<void> {
@@ -591,6 +814,7 @@ function buildClients(overrides: Partial<RealRunClients> = {}): RealRunClients {
     github: overrides.github ?? new GitHubCliAdapter(),
     codexReadiness: overrides.codexReadiness ?? codex as unknown as CodexPreflightClient,
     codex,
+    reviewer: overrides.reviewer ?? codex,
     validation: overrides.validation ?? { run: runCommand },
   };
 }

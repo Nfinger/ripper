@@ -137,6 +137,9 @@ describe('handleProfilesCommand', () => {
     const written = await readFile(join(homeDir, '.symphony', 'profiles', 'new-profile.yaml'), 'utf8');
     expect(written).toContain('schema_version: 1');
     expect(written).toContain('name: \"new-profile\"');
+    expect(written).toContain('knowledge:');
+    expect(written).toContain('docs/specs/*.md');
+    expect(written).toContain('agent_review:');
   });
 
   it('profiles init rejects unsafe profile names', async () => {

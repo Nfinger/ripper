@@ -9,6 +9,7 @@ import type {
   ChangePolicyConfig,
   CleanupConfig,
   GitHubConfig,
+  KnowledgeConfig,
   LinearConfig,
   PreflightConfig,
   PromptConfig,
@@ -17,6 +18,8 @@ import type {
   SupervisedProfile,
   ValidationCommand,
   ValidationConfig,
+  AgentReviewConfig,
+  VerificationConfig,
   GitConfig,
 } from './types.js';
 import { SUPERVISED_PROFILE_SCHEMA_VERSION } from './types.js';
@@ -34,7 +37,10 @@ const TOP_LEVEL_KEYS = new Set([
   'linear',
   'agent',
   'prompt',
+  'knowledge',
   'preflight',
+  'agent_review',
+  'verification',
   'validation',
   'change_policy',
   'git',
@@ -102,8 +108,14 @@ function parseProfile(value: unknown, sourcePath: string): ParseResult<Supervise
   if (agentRecord instanceof SupervisedProfileError) return agentRecord;
   const promptRecord = requiredRecord(value, 'prompt', sourcePath);
   if (promptRecord instanceof SupervisedProfileError) return promptRecord;
+  const knowledgeRecord = optionalRecord(value, 'knowledge', sourcePath);
+  if (knowledgeRecord instanceof SupervisedProfileError) return knowledgeRecord;
   const preflightRecord = requiredRecord(value, 'preflight', sourcePath);
   if (preflightRecord instanceof SupervisedProfileError) return preflightRecord;
+  const agentReviewRecord = optionalRecord(value, 'agent_review', sourcePath);
+  if (agentReviewRecord instanceof SupervisedProfileError) return agentReviewRecord;
+  const verificationRecord = optionalRecord(value, 'verification', sourcePath);
+  if (verificationRecord instanceof SupervisedProfileError) return verificationRecord;
   const validationRecord = requiredRecord(value, 'validation', sourcePath);
   if (validationRecord instanceof SupervisedProfileError) return validationRecord;
   const changePolicyRecord = requiredRecord(value, 'change_policy', sourcePath);
@@ -125,8 +137,14 @@ function parseProfile(value: unknown, sourcePath: string): ParseResult<Supervise
   if (agent instanceof SupervisedProfileError) return agent;
   const prompt = parsePrompt(promptRecord, sourcePath);
   if (prompt instanceof SupervisedProfileError) return prompt;
+  const knowledge = parseKnowledge(knowledgeRecord, sourcePath);
+  if (knowledge instanceof SupervisedProfileError) return knowledge;
   const preflight = parsePreflight(preflightRecord, sourcePath);
   if (preflight instanceof SupervisedProfileError) return preflight;
+  const agentReview = parseAgentReview(agentReviewRecord, sourcePath);
+  if (agentReview instanceof SupervisedProfileError) return agentReview;
+  const verification = parseVerification(verificationRecord, sourcePath);
+  if (verification instanceof SupervisedProfileError) return verification;
   const validation = parseValidation(validationRecord, sourcePath);
   if (validation instanceof SupervisedProfileError) return validation;
   const changePolicy = parseChangePolicy(changePolicyRecord, sourcePath);
@@ -140,7 +158,7 @@ function parseProfile(value: unknown, sourcePath: string): ParseResult<Supervise
   const cleanup = parseCleanup(cleanupRecord, sourcePath);
   if (cleanup instanceof SupervisedProfileError) return cleanup;
 
-  return { schema_version: 1, name, repo, linear, agent, prompt, preflight, validation, change_policy: changePolicy, git, github, run, cleanup };
+  return { schema_version: 1, name, repo, linear, agent, prompt, knowledge, preflight, agent_review: agentReview, verification, validation, change_policy: changePolicy, git, github, run, cleanup };
 }
 
 function parseRepo(record: Record<string, unknown>, sourcePath: string): ParseResult<RepoConfig> {
@@ -233,6 +251,21 @@ function parsePrompt(record: Record<string, unknown>, sourcePath: string): Parse
   return { include_repo_instruction_files: files, repo_instruction_max_chars: maxChars, extra_instructions: extra };
 }
 
+function parseKnowledge(record: Record<string, unknown> | null, sourcePath: string): ParseResult<KnowledgeConfig> {
+  if (record === null) return { enabled: false, include: [], max_bytes: 80000 };
+  const enabled = requiredBoolean(record, 'enabled', sourcePath, 'knowledge.enabled');
+  if (enabled instanceof SupervisedProfileError) return enabled;
+  const include = requiredStringArray(record, 'include', sourcePath, 'knowledge.include');
+  if (include instanceof SupervisedProfileError) return include;
+  for (const [index, item] of include.entries()) {
+    if (path.isAbsolute(item) || item.split(/[\\/]+/u).includes('..')) return invalid(sourcePath, `knowledge.include.${index}`);
+  }
+  const maxBytes = requiredNumber(record, 'max_bytes', sourcePath, 'knowledge.max_bytes');
+  if (maxBytes instanceof SupervisedProfileError) return maxBytes;
+  if (!Number.isInteger(maxBytes) || maxBytes < 0) return invalid(sourcePath, 'knowledge.max_bytes');
+  return { enabled, include, max_bytes: maxBytes };
+}
+
 function parsePreflight(record: Record<string, unknown>, sourcePath: string): ParseResult<PreflightConfig> {
   const require_main_checkout_clean = requiredBoolean(record, 'require_main_checkout_clean', sourcePath, 'preflight.require_main_checkout_clean');
   if (require_main_checkout_clean instanceof SupervisedProfileError) return require_main_checkout_clean;
@@ -253,28 +286,61 @@ function parsePreflight(record: Record<string, unknown>, sourcePath: string): Pa
   return { require_main_checkout_clean, require_main_checkout_on_base_branch, require_no_merge_or_rebase_in_progress, require_base_fetchable, require_target_branch_absent, require_github_auth, require_linear_auth, require_codex_available };
 }
 
-function parseValidation(record: Record<string, unknown>, sourcePath: string): ParseResult<ValidationConfig> {
-  if (record.network !== 'allowed' && record.network !== 'disabled') return invalid(sourcePath, 'validation.network');
-  if (!Array.isArray(record.commands)) return invalid(sourcePath, 'validation.commands');
+
+function parseAgentReview(record: Record<string, unknown> | null, sourcePath: string): ParseResult<AgentReviewConfig> {
+  if (record === null) return { enabled: true, command: 'codex', model: null, timeout_seconds: 300, max_fix_attempts: 2 };
+  const enabled = requiredBoolean(record, 'enabled', sourcePath, 'agent_review.enabled');
+  if (enabled instanceof SupervisedProfileError) return enabled;
+  const command = requiredString(record, 'command', sourcePath, 'agent_review.command');
+  if (command instanceof SupervisedProfileError) return command;
+  const timeout = requiredNumber(record, 'timeout_seconds', sourcePath, 'agent_review.timeout_seconds');
+  if (timeout instanceof SupervisedProfileError) return timeout;
+  const maxFixAttemptsValue = record.max_fix_attempts ?? 2;
+  if (typeof maxFixAttemptsValue !== 'number' || !Number.isInteger(maxFixAttemptsValue) || maxFixAttemptsValue < 0) return invalid(sourcePath, 'agent_review.max_fix_attempts');
+  const modelValue = record.model;
+  if (modelValue !== null && typeof modelValue !== 'string') return invalid(sourcePath, 'agent_review.model');
+  return { enabled, command, model: modelValue, timeout_seconds: timeout, max_fix_attempts: maxFixAttemptsValue };
+}
+
+function parseVerification(record: Record<string, unknown> | null, sourcePath: string): ParseResult<VerificationConfig> {
+  if (record === null) return { enabled: false, mode: 'generic_smoke', commands: [] };
+  const enabled = requiredBoolean(record, 'enabled', sourcePath, 'verification.enabled');
+  if (enabled instanceof SupervisedProfileError) return enabled;
+  if (record.mode !== 'ui_playwright_mcp' && record.mode !== 'backend_smoke' && record.mode !== 'generic_smoke') return invalid(sourcePath, 'verification.mode');
+  if (!Array.isArray(record.commands)) return invalid(sourcePath, 'verification.commands');
+  const commands = parseCommandArray(record.commands, sourcePath, 'verification.commands');
+  if (commands instanceof SupervisedProfileError) return commands;
+  return { enabled, mode: record.mode, commands };
+}
+
+function parseCommandArray(items: unknown[], sourcePath: string, basePath: string): ParseResult<ValidationCommand[]> {
   const commands: ValidationCommand[] = [];
-  for (const [index, command] of record.commands.entries()) {
-    if (!isRecord(command)) return invalid(sourcePath, `validation.commands.${index}`);
-    const name = requiredString(command, 'name', sourcePath, `validation.commands.${index}.name`);
+  for (const [index, command] of items.entries()) {
+    if (!isRecord(command)) return invalid(sourcePath, `${basePath}.${index}`);
+    const name = requiredString(command, 'name', sourcePath, `${basePath}.${index}.name`);
     if (name instanceof SupervisedProfileError) return name;
-    const timeout = requiredNumber(command, 'timeout_seconds', sourcePath, `validation.commands.${index}.timeout_seconds`);
+    const timeout = requiredNumber(command, 'timeout_seconds', sourcePath, `${basePath}.${index}.timeout_seconds`);
     if (timeout instanceof SupervisedProfileError) return timeout;
     if ('argv' in command && !('shell' in command)) {
-      const argv = requiredStringArray(command, 'argv', sourcePath, `validation.commands.${index}.argv`);
+      const argv = requiredStringArray(command, 'argv', sourcePath, `${basePath}.${index}.argv`);
       if (argv instanceof SupervisedProfileError) return argv;
       commands.push({ name, argv, timeout_seconds: timeout });
     } else if ('shell' in command && !('argv' in command)) {
-      const shell = requiredString(command, 'shell', sourcePath, `validation.commands.${index}.shell`);
+      const shell = requiredString(command, 'shell', sourcePath, `${basePath}.${index}.shell`);
       if (shell instanceof SupervisedProfileError) return shell;
       commands.push({ name, shell, timeout_seconds: timeout });
     } else {
-      return invalid(sourcePath, `validation.commands.${index}`);
+      return invalid(sourcePath, `${basePath}.${index}`);
     }
   }
+  return commands;
+}
+
+function parseValidation(record: Record<string, unknown>, sourcePath: string): ParseResult<ValidationConfig> {
+  if (record.network !== 'allowed' && record.network !== 'disabled') return invalid(sourcePath, 'validation.network');
+  if (!Array.isArray(record.commands)) return invalid(sourcePath, 'validation.commands');
+  const commands = parseCommandArray(record.commands, sourcePath, 'validation.commands');
+  if (commands instanceof SupervisedProfileError) return commands;
   return { network: record.network, commands };
 }
 
@@ -390,6 +456,12 @@ function parseCleanup(record: Record<string, unknown>, sourcePath: string): Pars
     keep_local_branch_on_failure: keepLocalFailure,
     keep_local_branch_on_warning: keepLocalWarning,
   };
+}
+
+function optionalRecord(record: Record<string, unknown>, key: string, sourcePath: string): ParseResult<Record<string, unknown> | null> {
+  if (!(key in record) || record[key] === null) return null;
+  if (!isRecord(record[key])) return invalid(sourcePath, key);
+  return record[key];
 }
 
 function requiredRecord(record: Record<string, unknown>, key: string, sourcePath: string, field = key): ParseResult<Record<string, unknown>> {
