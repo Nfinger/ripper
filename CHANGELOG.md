@@ -2,6 +2,23 @@
 
 All notable changes to Ripper/Symphony will be documented here.
 
+## v0.3.1 - 2026-05-12
+
+Agent handoff hardening release for safer Symphony/Ripper autonomous runs.
+
+### Added
+
+- Profile-specific issue lifecycle transitions and candidate filters for bounded tracker pickup.
+- Acceptance-criteria work-plan requirements in supervised implementation prompts.
+- Independent reviewer enforcement for acceptance-criteria coverage before PR handoff.
+- Rhema onecli daemon helper for running the Rhema profile through the live Linear proxy.
+
+### Changed
+
+- Supervised review approvals now fail closed unless they include checked acceptance-criteria coverage.
+- Product/operator-visible test-only patches are treated as suspicious by the reviewer prompt.
+- Redaction and selection behavior now cover additional lifecycle/filtering edge cases.
+
 ## v0.3.0 - 2026-05-11
 
 Verification evidence release for supervised UI/backend smoke runs.
