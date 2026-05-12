@@ -72,6 +72,17 @@ function clients(overrides: Partial<RealRunClients> = {}): RealRunClients {
   };
 }
 
+function clientsForIssue(issue: LinearIssue): RealRunClients {
+  const deps = clients();
+  deps.linear.findEligibleIssues = vi.fn(async () => [issue]);
+  deps.linear.getIssueByKey = vi.fn(async (key: string) => key === issue.key ? issue : null);
+  deps.linear.getIssueById = vi.fn()
+    .mockResolvedValueOnce(issue)
+    .mockResolvedValueOnce({ ...issue, status: 'In Progress', assigneeId: 'me' });
+  deps.git.newCommits = vi.fn(async () => [{ sha: 'a'.repeat(40), subject: `${issue.key} implement thing`, body: '', authorName: 'Codex', authorEmail: 'codex@example.com', committerName: 'Codex', committerEmail: 'codex@example.com' }]);
+  return deps;
+}
+
 describe('runRealRun', () => {
   it('claims one issue, runs Codex, gets independent review, checks committed changes, then stops for manual inspection', async () => {
     const { homeDir, repo } = await setupHome();
@@ -97,6 +108,55 @@ describe('runRealRun', () => {
     expect(await readFile(path.join(result.run.run_dir, 'diff-summary.md'), 'utf8')).toContain('ENG-1 implement thing');
     expect(await readFile(path.join(result.run.run_dir, 'result.md'), 'utf8')).toContain('Manual inspection required');
     expect(await readRepoLock(homeDir, repo)).toBeNull();
+  });
+
+  it('allows different explicit issues for the same repo to run concurrently in isolated worktrees', async () => {
+    const { homeDir } = await setupHome();
+    const issueA = { ...ISSUE, id: 'i1', key: 'ENG-1', title: 'Fix first thing' };
+    const issueB = { ...ISSUE, id: 'i2', key: 'ENG-2', title: 'Fix second thing' };
+    const depsA = clientsForIssue(issueA);
+    const depsB = clientsForIssue(issueB);
+    let codexStarted = 0;
+    const slowCodex = vi.fn(async () => {
+      codexStarted += 1;
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      return { ok: true as const, finalText: 'done', exitCode: 0, timedOut: false as const };
+    });
+    depsA.codex.run = slowCodex;
+    depsB.codex.run = slowCodex;
+
+    const [first, second] = await Promise.all([
+      runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: depsA }),
+      runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-2', clients: depsB }),
+    ]);
+
+    expect(first.exitCode).toBe(0);
+    expect(second.exitCode).toBe(0);
+    expect(codexStarted).toBe(2);
+    expect(depsA.git.createWorktree).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('ENG-1'), 'symphony/p/ENG-1-implementation', 'origin/main');
+    expect(depsB.git.createWorktree).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('ENG-2'), 'symphony/p/ENG-2-implementation', 'origin/main');
+  });
+
+  it('refuses a duplicate explicit issue while the first run is active', async () => {
+    const { homeDir } = await setupHome();
+    const depsA = clientsForIssue(ISSUE);
+    const depsB = clientsForIssue(ISSUE);
+    depsA.codex.run = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      return { ok: true as const, finalText: 'done', exitCode: 0, timedOut: false as const };
+    });
+
+    const [first, second] = await Promise.all([
+      runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: depsA }),
+      runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: depsB }),
+    ]);
+
+    const results = [first, second].sort((a, b) => a.exitCode - b.exitCode);
+    expect(results[0]?.exitCode).toBe(0);
+    expect(results[1]?.exitCode).toBe(10);
+    expect(results[1]?.message).toContain('issue lock exists');
+    expect(depsA.codex.run.mock.calls.length + depsB.codex.run.mock.calls.length).toBe(1);
+    expect(depsA.linear.claimIssue.mock.calls.length + depsB.linear.claimIssue.mock.calls.length).toBe(1);
   });
 
   it('runs validation, pushes the branch, creates a sanitized non-draft PR, waits for CI, then completes Linear success handoff', async () => {

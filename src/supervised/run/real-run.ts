@@ -8,7 +8,7 @@ import { GitHubCliAdapter, type CreatePullRequestOptions, type GitHubCheckRun, t
 import { runCommand } from '../command-runner/runner.js';
 import type { CommandResult, RunCommandOptions } from '../command-runner/types.js';
 import { EXIT_CODEX_FAILED, EXIT_CONFIG_OR_SCHEMA, EXIT_LOCK_EXISTS, EXIT_PREFLIGHT_FAILED, EXIT_REFUSED, EXIT_SUCCEEDED } from '../exit-codes.js';
-import { acquireRepoLock, releaseRepoLock } from '../locks/store.js';
+import { acquireRepoLock, acquireScopedLock, releaseRepoLock, releaseScopedLock, withRepoOperationLock, withScopedOperationLock } from '../locks/store.js';
 import { loadSupervisedProfile } from '../profile/loader.js';
 import type { SupervisedProfile, ValidationCommand } from '../profile/types.js';
 import { buildPrompt } from '../prompt/build.js';
@@ -143,17 +143,9 @@ export async function runRealRun(opts: RunRealRunOptions): Promise<RunRealRunRes
   const clients = buildClients(opts.clients);
   const targetBranch = opts.issueKey ? branchName(profile.name, opts.issueKey, 'implementation') : `symphony/${safeSegment(profile.name)}/${run.run_id}`;
 
-  let lockAcquired = false;
+  let issueLockScope: string | null = null;
+  let issueLockAcquired = false;
   try {
-    const lock = await acquireRepoLock({ homeDir: opts.homeDir, repoPath: profile.repo.path, runId: run.run_id, reason: `symphony real run ${run.run_id}` });
-    if (!lock.ok) {
-      await writeFileAtomic(path.join(run.run_dir, 'result.md'), '# Symphony run refused\n\nReason: lock_exists\n');
-      await transitionRun({ homeDir: opts.homeDir }, run.run_id, 'refused', 'lock_exists');
-      return { exitCode: EXIT_LOCK_EXISTS, run: await readRunById(opts.homeDir, run.run_id), message: 'Run refused: repo lock exists' };
-    }
-    lockAcquired = true;
-    await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: run.run_id, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: 'repo_lock_acquired', repo_path: lock.lock.repo_path, lock_id: lock.lock.lock_id } });
-
     const candidates = opts.issueKey ? await getByIssueKey(clients.linear, profile, opts.issueKey) : await clients.linear.findEligibleIssues(profile);
     if (candidates.length !== 1) {
       const reason: RunReason = candidates.length === 0 ? (opts.issueKey ? 'issue_not_eligible' : 'no_candidates') : 'multiple_candidates';
@@ -163,11 +155,20 @@ export async function runRealRun(opts: RunRealRunOptions): Promise<RunRealRunRes
     }
     const issue = candidates[0];
     if (!issue) throw new Error('expected selected issue');
+    issueLockScope = issueLockScopeFor(profile.name, issue.key);
+    const issueLock = await acquireScopedLock({ homeDir: opts.homeDir, scope: issueLockScope, runId: run.run_id, reason: `symphony issue run ${issue.key}` });
+    if (!issueLock.ok) {
+      await writeFileAtomic(path.join(run.run_dir, 'result.md'), '# Symphony run refused\n\nReason: issue_lock_exists\n');
+      await transitionRun({ homeDir: opts.homeDir }, run.run_id, 'refused', 'lock_exists');
+      return { exitCode: EXIT_LOCK_EXISTS, run: await readRunById(opts.homeDir, run.run_id), message: 'Run refused: issue lock exists' };
+    }
+    await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: run.run_id, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: 'issue_lock_acquired', scope: issueLock.lock.scope, lock_id: issueLock.lock.lock_id } });
+    issueLockAcquired = true;
     const actualBranch = branchName(profile.name, issue.key, 'implementation');
     await updateRunJson(run.run_dir, { ...(await readRunById(opts.homeDir, run.run_id)), issue_key: issue.key, updated_at: new Date().toISOString() });
 
     await transitionRun({ homeDir: opts.homeDir }, run.run_id, 'preflight_running');
-    const preflight = await runPreflight({ profile, targetBranch: actualBranch, git: clients.git, github: clients.github, linear: clients.linear, codex: clients.codexReadiness });
+    const preflight = await withRepoOperationLock(opts.homeDir, profile.repo.path, () => runPreflight({ profile, targetBranch: actualBranch, git: clients.git, github: clients.github, linear: clients.linear, codex: clients.codexReadiness }));
     await writePreflightArtifacts(run.run_dir, run.run_id, preflight);
     if (!preflight.ok) {
       await writeFileAtomic(path.join(run.run_dir, 'result.md'), `# Symphony preflight failed\n\nFailures: ${preflight.failures.join(', ') || '(unknown)'}\n`);
@@ -199,8 +200,8 @@ export async function runRealRun(opts: RunRealRunOptions): Promise<RunRealRunRes
     const postClaimResult = await runPostClaimCodexSlice({ opts, run, profile, issue, actualBranch, clients });
     return postClaimResult;
   } finally {
-    if (lockAcquired) {
-      await releaseRepoLock({ homeDir: opts.homeDir, repoPath: profile.repo.path, runId: run.run_id, reason: 'codex slice finished before validation/handoff' });
+    if (issueLockScope && issueLockAcquired) {
+      await releaseScopedLock({ homeDir: opts.homeDir, scope: issueLockScope, runId: run.run_id, reason: 'run finished' });
     }
   }
 }
@@ -256,11 +257,11 @@ async function readPrMetadata(opts: { runDir: string; runId: string; expectedBas
 async function runPostClaimCodexSlice(opts: { opts: RunRealRunOptions; run: RunRecord; profile: SupervisedProfile; issue: LinearIssue; actualBranch: string; clients: RealRunClients }): Promise<RunRealRunResult> {
   const { run, profile, issue, actualBranch, clients } = opts;
   try {
-    const baseShaResult = await getRemoteBaseShaOrFail({ opts: opts.opts, run, profile, issue, git: clients.git, linear: clients.linear });
+    const baseShaResult = await withRepoOperationLock(opts.opts.homeDir, profile.repo.path, () => getRemoteBaseShaOrFail({ opts: opts.opts, run, profile, issue, git: clients.git, linear: clients.linear }));
     if (baseShaResult.ok === false) return baseShaResult.result;
     const baseSha = baseShaResult.baseSha;
     const prompt = await buildPrompt({ profile, issue, runId: run.run_id, dryRun: false, runDir: run.run_dir });
-    const codex = await runCodexPhase({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, prompt: prompt.prompt, branch: actualBranch, baseRef: `${profile.repo.remote}/${profile.repo.base_branch}`, git: clients.git, codex: clients.codex });
+    const codex = await runCodexPhase({ homeDir: opts.opts.homeDir, runId: run.run_id, profile, prompt: prompt.prompt, branch: actualBranch, baseRef: `${profile.repo.remote}/${profile.repo.base_branch}`, git: clients.git, codex: clients.codex, withGitOperationLock: (fn) => withRepoOperationLock(opts.opts.homeDir, profile.repo.path, fn) });
     if (!codex.ok) {
       const reason = (codex as { ok: false; reason: RunReason }).reason;
       await postFailureComment({ runDir: run.run_dir, runId: run.run_id, issue, linear: clients.linear, profile, reason });
@@ -558,22 +559,24 @@ async function runHandoffPhase(opts: { homeDir: string; runId: string; profile: 
   const run = await readRunById(opts.homeDir, opts.runId);
   try {
     await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'handoff_running');
-    await opts.git.pushBranch(opts.worktreePath, opts.profile.repo.remote, opts.branch);
-    await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: 'git_branch_pushed', remote: opts.profile.repo.remote, branch: opts.branch } });
+    const pr = await withScopedOperationLock(opts.homeDir, `branch:${opts.profile.repo.remote}:${opts.branch}`, async () => {
+      await opts.git.pushBranch(opts.worktreePath, opts.profile.repo.remote, opts.branch);
+      await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'side_effect', data: { side_effect: 'git_branch_pushed', remote: opts.profile.repo.remote, branch: opts.branch } });
 
-    const body = await buildPrBody({ runDir: run.run_dir, issue: opts.issue, branch: opts.branch, maxChars: opts.profile.github.pr_body_max_chars });
-    const bodyPath = path.join(run.run_dir, 'pr-body.md');
-    await writeFileAtomic(bodyPath, body);
-    await addArtifacts(run.run_dir, [{ path: bodyPath, visibility: 'github_visible', kind: 'pr_body' }]);
+      const body = await buildPrBody({ runDir: run.run_dir, issue: opts.issue, branch: opts.branch, maxChars: opts.profile.github.pr_body_max_chars });
+      const bodyPath = path.join(run.run_dir, 'pr-body.md');
+      await writeFileAtomic(bodyPath, body);
+      await addArtifacts(run.run_dir, [{ path: bodyPath, visibility: 'github_visible', kind: 'pr_body' }]);
 
-    const prTitle = buildGithubVisiblePrTitle(opts.issue);
-    const pr = await opts.github.createPullRequest({
-      cwd: opts.worktreePath,
-      title: prTitle,
-      body,
-      head: opts.branch,
-      base: opts.profile.repo.base_branch,
-      draft: opts.profile.github.draft,
+      const prTitle = buildGithubVisiblePrTitle(opts.issue);
+      return opts.github.createPullRequest({
+        cwd: opts.worktreePath,
+        title: prTitle,
+        body,
+        head: opts.branch,
+        base: opts.profile.repo.base_branch,
+        draft: opts.profile.github.draft,
+      });
     });
     const prJsonPath = path.join(run.run_dir, 'pr.json');
     await writeJsonAtomic(prJsonPath, { schema_version: 1, run_id: opts.runId, number: pr.number, url: pr.url, head: opts.branch, base: opts.profile.repo.base_branch, draft: opts.profile.github.draft });
@@ -1069,6 +1072,10 @@ async function addArtifacts(runDir: string, newArtifacts: RunArtifact[]): Promis
 
 function branchName(profileName: string, issueKey: string, title: string): string {
   return `symphony/${safeSegment(profileName)}/${issueKey}-${slug(title)}`;
+}
+
+function issueLockScopeFor(profileName: string, issueKey: string): string {
+  return `issue:${safeSegment(profileName)}:${issueKey}`;
 }
 
 function safeSegment(value: string): string {

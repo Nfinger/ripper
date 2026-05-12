@@ -1,6 +1,6 @@
 import os from 'node:os';
 import { EXIT_CONFIG_OR_SCHEMA, EXIT_LOCK_EXISTS, EXIT_SUCCEEDED } from '../exit-codes.js';
-import { readRepoLock, releaseRepoLock } from '../locks/store.js';
+import { readRepoLock, readScopedLock, releaseRepoLock, releaseScopedLock } from '../locks/store.js';
 
 export interface LocksCommandOptions {
   argv: string[];
@@ -14,10 +14,11 @@ export interface LocksCommandResult {
 }
 
 export async function handleLocksCommand(opts: LocksCommandOptions): Promise<LocksCommandResult> {
-  const [command, repoPath, ...rest] = opts.argv;
+  const [command, maybeRepoPath, ...remaining] = opts.argv;
   const homeDir = opts.homeDir ?? os.homedir();
-  if (!command || !repoPath) {
-    opts.stderr('Usage: symphony locks <status|unlock> <repo-path> [--json] [--reason <text>]\n');
+  const rest = maybeRepoPath?.startsWith('--') ? [maybeRepoPath, ...remaining] : remaining;
+  if (!command) {
+    opts.stderr('Usage: symphony locks <status|unlock> <repo-path|--scope <scope>> [--json] [--reason <text>]\n');
     return { exitCode: EXIT_CONFIG_OR_SCHEMA };
   }
 
@@ -26,13 +27,23 @@ export async function handleLocksCommand(opts: LocksCommandOptions): Promise<Loc
     opts.stderr(`${parsed}\n`);
     return { exitCode: EXIT_CONFIG_OR_SCHEMA };
   }
+  const repoPath = parsed.scope ? undefined : maybeRepoPath;
+  if (!repoPath && !parsed.scope) {
+    opts.stderr('Usage: symphony locks <status|unlock> <repo-path|--scope <scope>> [--json] [--reason <text>]\n');
+    return { exitCode: EXIT_CONFIG_OR_SCHEMA };
+  }
 
   if (command === 'status') {
-    const lock = await readRepoLock(homeDir, repoPath);
+    const lock = parsed.scope ? await readScopedLock(homeDir, parsed.scope) : await readRepoLock(homeDir, repoPath!);
+    const target = parsed.scope ?? repoPath!;
     if (parsed.json) {
       opts.stdout(`${JSON.stringify({ locked: lock !== null, lock }, null, 2)}\n`);
+    } else if (lock && 'scope' in lock) {
+      opts.stdout(`locked: ${lock.scope} by ${lock.run_id ?? 'unknown run'}\n`);
+    } else if (lock && 'repo_path' in lock) {
+      opts.stdout(`locked: ${lock.repo_path} by ${lock.run_id ?? 'unknown run'}\n`);
     } else {
-      opts.stdout(lock ? `locked: ${lock.repo_path} by ${lock.run_id ?? 'unknown run'}\n` : `unlocked: ${repoPath}\n`);
+      opts.stdout(`unlocked: ${target}\n`);
     }
     return { exitCode: lock ? EXIT_LOCK_EXISTS : EXIT_SUCCEEDED };
   }
@@ -43,11 +54,14 @@ export async function handleLocksCommand(opts: LocksCommandOptions): Promise<Loc
       opts.stderr('--reason requires a value\n');
       return { exitCode: EXIT_CONFIG_OR_SCHEMA };
     }
-    const result = await releaseRepoLock({ homeDir, repoPath, reason });
+    const result = parsed.scope
+      ? await releaseScopedLock({ homeDir, scope: parsed.scope, reason })
+      : await releaseRepoLock({ homeDir, repoPath: repoPath!, reason });
+    const target = parsed.scope ?? repoPath!;
     if (parsed.json) {
       opts.stdout(`${JSON.stringify({ ok: true, released: result.released }, null, 2)}\n`);
     } else {
-      opts.stdout(result.released ? `released lock for ${repoPath}\n` : `no lock for ${repoPath}\n`);
+      opts.stdout(result.released ? `released lock for ${target}\n` : `no lock for ${target}\n`);
     }
     return { exitCode: EXIT_SUCCEEDED };
   }
@@ -59,6 +73,7 @@ export async function handleLocksCommand(opts: LocksCommandOptions): Promise<Loc
 interface ParsedArgs {
   json: boolean;
   reason?: string;
+  scope?: string;
 }
 
 function parseCommonArgs(args: string[]): ParsedArgs | string {
@@ -67,6 +82,13 @@ function parseCommonArgs(args: string[]): ParsedArgs | string {
     const arg = args[index];
     if (arg === '--json') {
       parsed.json = true;
+      continue;
+    }
+    if (arg === '--scope') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('-')) return '--scope requires a value';
+      parsed.scope = value;
+      index += 1;
       continue;
     }
     if (arg === '--reason') {
