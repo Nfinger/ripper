@@ -35,6 +35,7 @@ const RAW_ISSUE_NODE = {
   createdAt: '2026-05-01T00:00:00.000Z',
   updatedAt: '2026-05-02T00:00:00.000Z',
   state: { name: 'Todo' },
+  assignee: { id: 'user-1', name: 'Nathaniel Finger' },
   labels: { nodes: [{ name: 'Frontend' }, { name: 'API' }] },
   inverseRelations: {
     nodes: [
@@ -49,6 +50,8 @@ describe('normalizeFullIssue', () => {
     const issue = normalizeFullIssue(RAW_ISSUE_NODE);
     expect(issue).not.toBeNull();
     expect(issue?.labels).toEqual(['frontend', 'api']);
+    expect(issue?.assignee_id).toBe('user-1');
+    expect(issue?.assignee_name).toBe('Nathaniel Finger');
     expect(issue?.blocked_by).toEqual([
       { id: 'blocker-1', identifier: 'MS-99', state: 'In Progress' },
     ]);
@@ -126,6 +129,27 @@ describe('LinearClient.fetch_candidate_issues', () => {
     expect(body.variables.filter.team).toEqual({ key: { eq: 'MFL' } });
     expect(body.variables.filter.project).toEqual({ slugId: { eq: 'market-savvy' } });
     expect(body.variables.filter.state).toEqual({ name: { in: ['Todo', 'In Progress'] } });
+  });
+
+  it('builds the filter with assignee ids when set', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        data: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } },
+      }),
+    );
+    const c = new LinearClient({
+      endpoint: 'https://api.linear.app/graphql',
+      apiKey: 'lin_api_test',
+      teamKey: 'RMA',
+      projectSlug: null,
+      activeStates: ['Todo'],
+      assigneeIds: ['user-1'],
+      fetchImpl,
+    });
+    await c.fetch_candidate_issues();
+    const body = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string);
+    expect(body.variables.filter.state).toEqual({ name: { in: ['Todo'] } });
+    expect(body.variables.filter.assignee).toEqual({ id: { in: ['user-1'] } });
   });
 
   it('omits project filter when only team_key is set (whole-team scope)', async () => {

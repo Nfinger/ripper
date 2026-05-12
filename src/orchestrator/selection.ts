@@ -41,6 +41,14 @@ export function isEligible(
   const terminalSet = new Set(config.tracker.terminal_states.map((s) => s.toLowerCase()));
   if (!activeSet.has(stateLower)) return false;
   if (terminalSet.has(stateLower)) return false;
+  if (config.tracker.assignee_ids.length > 0 && !config.tracker.assignee_ids.includes(issue.assignee_id ?? '')) return false;
+  if (config.tracker.assignee_names.length > 0 && !config.tracker.assignee_names.includes(issue.assignee_name ?? '')) return false;
+  if (config.tracker.required_labels.length > 0) {
+    for (const required of config.tracker.required_labels) {
+      if (!issue.labels.includes(required.toLowerCase())) return false;
+    }
+  }
+  if (config.tracker.excluded_labels.some((label) => issue.labels.includes(label.toLowerCase()))) return false;
   if (state.running.has(issue.id)) return false;
   if (state.claimed.has(issue.id)) return false;
   if (state.completed.has(issue.id)) return false;

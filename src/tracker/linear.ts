@@ -28,6 +28,7 @@ const CANDIDATE_QUERY = /* GraphQL */ `
         createdAt
         updatedAt
         state { name }
+        assignee { id name }
         labels { nodes { name } }
         inverseRelations(first: 50) {
           nodes {
@@ -116,6 +117,7 @@ export interface LinearClientOptions {
   /** Linear project slugId. When set alongside teamKey, narrows to one project. */
   projectSlug?: string | null;
   activeStates: string[];
+  assigneeIds?: string[];
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
@@ -159,6 +161,7 @@ export function createLinearClient(tracker: TrackerConfig, fetchImpl?: typeof fe
       teamKey: tracker.team_key,
       projectSlug: tracker.project_slug,
       activeStates: tracker.active_states,
+      assigneeIds: tracker.assignee_ids,
       ...(fetchImpl !== undefined ? { fetchImpl } : {}),
     }),
   };
@@ -170,6 +173,7 @@ export class LinearClient implements TrackerClient {
   private readonly teamKey: string | null;
   private readonly projectSlug: string | null;
   private readonly activeStates: string[];
+  private readonly assigneeIds: string[];
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
 
@@ -179,6 +183,7 @@ export class LinearClient implements TrackerClient {
     this.teamKey = opts.teamKey ?? null;
     this.projectSlug = opts.projectSlug ?? null;
     this.activeStates = opts.activeStates;
+    this.assigneeIds = opts.assigneeIds ?? [];
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? NETWORK_TIMEOUT_MS;
   }
@@ -370,6 +375,7 @@ export class LinearClient implements TrackerClient {
     };
     if (this.teamKey) filter.team = { key: { eq: this.teamKey } };
     if (this.projectSlug) filter.project = { slugId: { eq: this.projectSlug } };
+    if (this.assigneeIds.length > 0) filter.assignee = { id: { in: this.assigneeIds } };
     return filter;
   }
 
@@ -611,6 +617,9 @@ export function normalizeFullIssue(node: unknown): Issue | null {
     typeof obj.priority === 'number' && Number.isFinite(obj.priority) && Number.isInteger(obj.priority)
       ? obj.priority
       : null;
+  const assigneeObj = asObject(obj.assignee);
+  const assigneeId = assigneeObj ? asString(assigneeObj.id) : null;
+  const assigneeName = assigneeObj ? asString(assigneeObj.name) : null;
 
   const labelsContainer = asObject(obj.labels);
   const labelNodes = labelsContainer ? asArray(labelsContainer.nodes) ?? [] : [];
@@ -649,6 +658,8 @@ export function normalizeFullIssue(node: unknown): Issue | null {
     branch_name: branchName,
     url,
     labels,
+    assignee_id: assigneeId,
+    assignee_name: assigneeName,
     blocked_by: blockers,
     created_at: createdAt,
     updated_at: updatedAt,
