@@ -21,12 +21,13 @@ export function generateRunId(issueKey: string | null, now: Date): string {
 export async function createRunRecord(opts: CreateRunRecordOptions): Promise<RunRecord> {
   const now = opts.now ?? new Date();
   const timestamp = now.toISOString();
-  const runId = opts.runId ?? generateRunId(opts.issueKey, now);
-  assertValidRunId(runId);
+  const baseRunId = opts.runId ?? generateRunId(opts.issueKey, now);
+  assertValidRunId(baseRunId);
   const runsDirectory = runsDir(opts.homeDir);
-  const runDir = runDirForId(opts.homeDir, runId);
   await mkdir(runsDirectory, { recursive: true });
-  await mkdir(runDir, { recursive: false });
+  const runId = opts.runId ? baseRunId : await reserveUniqueRunDir(opts.homeDir, baseRunId);
+  const runDir = runDirForId(opts.homeDir, runId);
+  if (opts.runId) await mkdir(runDir, { recursive: false });
 
   const run: RunRecord = {
     schema_version: 1,
@@ -117,6 +118,20 @@ export function assertValidRunId(runId: string): void {
   if (!isValidRunId(runId)) {
     throw new Error(`Invalid run id: ${runId}`);
   }
+}
+
+async function reserveUniqueRunDir(homeDir: string, baseRunId: string): Promise<string> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const runId = attempt === 0 ? baseRunId : `${baseRunId}-${attempt}`;
+    try {
+      await mkdir(runDirForId(homeDir, runId), { recursive: false });
+      return runId;
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+  throw new Error(`Unable to reserve unique run directory for ${baseRunId}`);
 }
 
 export function isValidRunId(runId: string): boolean {

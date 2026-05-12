@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { handleLocksCommand } from '../src/supervised/commands/locks.js';
 import { EXIT_CONFIG_OR_SCHEMA, EXIT_LOCK_EXISTS, EXIT_SUCCEEDED } from '../src/supervised/exit-codes.js';
-import { acquireRepoLock, lockPathForRepo, operationLockPathForRepo, releaseRepoLock, readRepoLock } from '../src/supervised/locks/store.js';
+import { acquireRepoLock, acquireScopedLock, lockPathForRepo, operationLockPathForRepo, releaseRepoLock, releaseScopedLock, readRepoLock, readScopedLock, withScopedOperationLock } from '../src/supervised/locks/store.js';
 import { createRunRecord } from '../src/supervised/run-record/store.js';
 
 async function tempHome(): Promise<string> {
@@ -109,6 +109,51 @@ describe('supervised repo locks', () => {
     const result = await acquireRepoLock({ homeDir, repoPath, runId: 'run-after-stale-oplock', reason: 'test' });
 
     expect(result.ok).toBe(true);
+  });
+
+  it('refuses to release a scoped lock owned by another run id', async () => {
+    const homeDir = await tempHome();
+    const scope = 'issue:p:ENG-1';
+    await acquireScopedLock({ homeDir, scope, runId: 'run-owner', reason: 'active issue run' });
+
+    const result = await releaseScopedLock({ homeDir, scope, runId: 'run-loser', reason: 'loser cleanup' });
+
+    expect(result.released).toBe(false);
+    expect((await readScopedLock(homeDir, scope))?.run_id).toBe('run-owner');
+  });
+
+  it('serializes scoped lock release against scoped operations', async () => {
+    const homeDir = await tempHome();
+    const scope = 'issue:p:ENG-1';
+    await acquireScopedLock({ homeDir, scope, runId: 'run-owner', reason: 'active issue run' });
+    let releasePromise: Promise<Awaited<ReturnType<typeof releaseScopedLock>>> | undefined;
+
+    await withScopedOperationLock(homeDir, scope, async () => {
+      releasePromise = releaseScopedLock({ homeDir, scope, runId: 'run-owner', reason: 'run finished' });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect((await readScopedLock(homeDir, scope))?.run_id).toBe('run-owner');
+    });
+
+    await releasePromise;
+    expect(await readScopedLock(homeDir, scope)).toBeNull();
+  });
+
+  it('locks CLI can inspect and manually release scoped locks', async () => {
+    const homeDir = await tempHome();
+    const scope = 'issue:p:ENG-1';
+    await acquireScopedLock({ homeDir, scope, runId: 'run-scoped-cli', reason: 'test' });
+    const statusIo = capture();
+
+    const status = await handleLocksCommand({ argv: ['status', '--scope', scope, '--json'], homeDir, ...statusIo });
+
+    expect(status.exitCode).toBe(EXIT_LOCK_EXISTS);
+    expect(JSON.parse(statusIo.stdoutText)).toMatchObject({ locked: true, lock: { run_id: 'run-scoped-cli', scope } });
+
+    const unlockIo = capture();
+    const unlock = await handleLocksCommand({ argv: ['unlock', '--scope', scope, '--reason', 'operator override', '--json'], homeDir, ...unlockIo });
+    expect(unlock.exitCode).toBe(EXIT_SUCCEEDED);
+    expect(JSON.parse(unlockIo.stdoutText)).toEqual({ ok: true, released: true });
+    expect(await readScopedLock(homeDir, scope)).toBeNull();
   });
 
   it('locks CLI supports status and manual unlock with a reason', async () => {

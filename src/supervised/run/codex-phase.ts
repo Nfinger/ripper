@@ -27,6 +27,7 @@ export interface RunCodexPhaseOptions {
   baseRef: string;
   git?: CodexPhaseGitClient;
   codex?: CodexPhaseCodexClient;
+  withGitOperationLock?: <T>(fn: () => Promise<T>) => Promise<T>;
   now?: Date;
 }
 
@@ -53,8 +54,12 @@ export async function runCodexPhase(opts: RunCodexPhaseOptions): Promise<RunCode
   await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: now.toISOString(), type: 'artifact', data: { artifacts: ['prompt.md', 'codex.log', 'codex.redacted.log'] } });
 
   try {
-    await git.createWorktree(opts.profile.repo.path, worktreePath, opts.branch, opts.baseRef);
-    await git.protectWorktreeFromAgentPush?.(worktreePath, opts.profile.repo.remote);
+    const createWorktree = async (): Promise<void> => {
+      await git.createWorktree(opts.profile.repo.path, worktreePath, opts.branch, opts.baseRef);
+      await git.protectWorktreeFromAgentPush?.(worktreePath, opts.profile.repo.remote);
+    };
+    if (opts.withGitOperationLock) await opts.withGitOperationLock(createWorktree);
+    else await createWorktree();
   } catch (error) {
     await transitionRun({ homeDir: opts.homeDir }, opts.runId, 'failed', 'worktree_creation_failed', new Date());
     await appendEvent(run.run_dir, { schema_version: 1, event_id: randomUUID(), run_id: opts.runId, timestamp: new Date().toISOString(), type: 'warning', data: { reason: 'worktree_creation_failed', message: error instanceof Error ? error.message : String(error) } });
