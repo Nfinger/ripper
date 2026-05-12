@@ -1,12 +1,19 @@
 ---
 # Rhema — Linear team RMA, repo voice-health-vbc.
-# Only issues explicitly moved to `Ready for Agent` are picked up here.
+# Issues in `Todo` assigned to Nathaniel Finger are eligible, subject to Linear blockers.
+# Symphony owns lifecycle transitions: Todo -> In Progress -> Ready for Review / Agent Failed.
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   team_key: RMA
-  active_states: [Ready for Agent]
-  terminal_states: [Ready for Review, Done, Cancelled, Canceled, Duplicate, Closed]
+  active_states: [Todo]
+  assignee_ids:
+    - a1de562e-0924-4704-bf6c-eab0fd21ccef
+  terminal_states: [Ready for Review, Agent Failed, Done, Cancelled, Canceled, Duplicate, Closed]
+  lifecycle:
+    claim_state: In Progress
+    success_state: Ready for Review
+    failure_state: Agent Failed
 
 polling:
   interval_ms: 60000
@@ -30,7 +37,7 @@ hooks:
 agent:
   max_concurrent_agents: 1
   max_concurrent_agents_by_state:
-    Ready for Agent: 1
+    Todo: 1
   max_turns: 1
   max_retry_attempts: 1
   max_total_tokens_per_daemon: 200000
@@ -60,8 +67,8 @@ You are working on a Rhema (voice-health-vbc) issue from Linear team **RMA**.
 - Branch: use the suggested branch above if present; otherwise create `nate/{{ issue.identifier | downcase }}-<short-slug>` off `origin/main`.
 - For research/assessment tickets (ERD remaps, codebase audits, cleanup plans), write the deliverable as markdown into `docs/` and treat the markdown PR as the handoff.
 - For code change tickets, implement, run tests where they exist, commit with atomic messages.
-- Handoff: push the branch, open a draft PR linking back to {{ issue.url }} with a clear summary, attach evidence/artifacts, and move the Linear issue to `Ready for Review` (use the `linear_graphql` tool if advertised, otherwise leave a marked TODO line in the PR body and comment with the PR URL).
-- Stop when handed off to Ready for Review or when the issue can't be done autonomously (and explain why; if you can update Linear, move it to `Agent Failed`).
+- Handoff: push the branch, open a draft PR linking back to {{ issue.url }} with a clear summary, and attach evidence/artifacts. Symphony will move the Linear issue to `Ready for Review` after a normal handoff.
+- Stop when handed off, or when the issue can't be done autonomously (explain why clearly; Symphony will move final failures to `Agent Failed`).
 - Don't modify shared infra, secrets, or anything outside this workspace.
 
 ## Visual proof (REQUIRED before Human Review handoff for any UI-touching change)

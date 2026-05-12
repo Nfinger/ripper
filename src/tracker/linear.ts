@@ -92,6 +92,23 @@ const COMMENT_CREATE_QUERY = /* GraphQL */ `
   }
 `;
 
+const WORKFLOW_STATE_BY_NAME_QUERY = /* GraphQL */ `
+  query SymphonyWorkflowStateByName($filter: WorkflowStateFilter!) {
+    workflowStates(first: 10, filter: $filter) {
+      nodes { id name }
+    }
+  }
+`;
+
+const ISSUE_UPDATE_STATE_QUERY = /* GraphQL */ `
+  mutation SymphonyIssueUpdateState($id: String!, $input: IssueUpdateInput!) {
+    issueUpdate(id: $id, input: $input) {
+      success
+      issue { id state { name } }
+    }
+  }
+`;
+
 interface LinearGraphqlResponse {
   data?: unknown;
   errors?: unknown[];
@@ -257,6 +274,24 @@ export class LinearClient implements TrackerClient {
     );
     if (!res.ok) return res;
     return { ok: true, value: res.value };
+  }
+
+  async update_issue_state(issueId: string, stateName: string): Promise<TrackerResult<{ state: string }>> {
+    const filter: Record<string, unknown> = { name: { eq: stateName } };
+    if (this.teamKey) filter.team = { key: { eq: this.teamKey } };
+    const stateRes = await this.runQuery(
+      WORKFLOW_STATE_BY_NAME_QUERY,
+      { filter },
+      parseWorkflowStateLookup,
+    );
+    if (!stateRes.ok) return { ok: false, error: stateRes.error };
+    const updateRes = await this.runQuery(
+      ISSUE_UPDATE_STATE_QUERY,
+      { id: issueId, input: { stateId: stateRes.value.id } },
+      parseIssueStateUpdate,
+    );
+    if (!updateRes.ok) return updateRes;
+    return { ok: true, value: updateRes.value };
   }
 
   /**
@@ -536,6 +571,44 @@ function parseMinimalStatePage(data: unknown): TrackerResult<MinimalIssueState[]
     out.push({ id, identifier, state: stateName });
   }
   return { ok: true, value: out };
+}
+
+function parseWorkflowStateLookup(data: unknown): TrackerResult<{ id: string; name: string }> {
+  const root = asObject(data);
+  const workflowStates = root ? asObject(root.workflowStates) : null;
+  if (!workflowStates) {
+    return {
+      ok: false,
+      error: { code: 'linear_unknown_payload', message: 'response missing workflowStates object' },
+    };
+  }
+  const nodes = asArray(workflowStates.nodes) ?? [];
+  for (const node of nodes) {
+    const obj = asObject(node);
+    if (!obj) continue;
+    const id = asString(obj.id);
+    const name = asString(obj.name);
+    if (id && name) return { ok: true, value: { id, name } };
+  }
+  return {
+    ok: false,
+    error: { code: 'linear_unknown_payload', message: 'no matching workflow state returned' },
+  };
+}
+
+function parseIssueStateUpdate(data: unknown): TrackerResult<{ state: string }> {
+  const root = asObject(data);
+  const issueUpdate = root ? asObject(root.issueUpdate) : null;
+  const issue = issueUpdate ? asObject(issueUpdate.issue) : null;
+  const state = issue ? asObject(issue.state) : null;
+  const stateName = state ? asString(state.name) : null;
+  if (!issueUpdate || !Boolean(issueUpdate.success) || !stateName) {
+    return {
+      ok: false,
+      error: { code: 'linear_unknown_payload', message: 'issueUpdate did not return a successful state' },
+    };
+  }
+  return { ok: true, value: { state: stateName } };
 }
 
 interface FileUploadSlot {

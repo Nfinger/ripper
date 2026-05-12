@@ -35,6 +35,26 @@ const KNOWLEDGE_PRECEDENCE = [
   'Treat the active issue/spec as the implementation contract, use durable docs for context, and update stale behavior docs when the approved spec changes behavior.',
 ].join('\n');
 
+const ACCEPTANCE_CRITERIA_WORK_PLAN = [
+  '## Required Acceptance-Criteria Work Plan',
+  'Before editing, extract every concrete requirement from the Linear issue into a checklist.',
+  'Classify each item as one of:',
+  '- product_behavior',
+  '- ui_state',
+  '- backend_behavior',
+  '- data_persistence',
+  '- test_coverage',
+  '- docs',
+  '- unknown / needs clarification',
+  '',
+  'Implement against this checklist, not just against the broad title. A regression test alone is not enough when the issue asks for operator-visible product behavior.',
+  '',
+  'Your final response must include:',
+  'ACCEPTANCE_CRITERIA_COVERAGE:',
+  '- [x] criterion text — evidence: changed file/test/manual check',
+  '- [ ] criterion text — not covered: reason/blocker',
+].join('\n');
+
 export async function buildPrompt(opts: BuildPromptOptions): Promise<BuildPromptResult> {
   const instructionSections: string[] = [];
   const includedInstructionFiles: string[] = [];
@@ -74,6 +94,7 @@ export async function buildPrompt(opts: BuildPromptOptions): Promise<BuildPrompt
     knowledge.sections.length > 0 ? `${KNOWLEDGE_PRECEDENCE}\n\n${knowledge.sections.join('\n\n')}` : '(none configured)',
     knowledge.sections.length > 0 ? DOCUMENTATION_POLICY : null,
     opts.profile.prompt.extra_instructions ? `## Profile Extra Instructions\n${opts.profile.prompt.extra_instructions}` : null,
+    ACCEPTANCE_CRITERIA_WORK_PLAN,
     '## Symphony DO NOT Rules',
     [
       '- do not create or push branches',
@@ -88,7 +109,7 @@ export async function buildPrompt(opts: BuildPromptOptions): Promise<BuildPrompt
       '- do not claim success without commits',
     ].join('\n'),
     '## Required Final Response Format',
-    ['SUMMARY:', '- ...', '', 'FILES_CHANGED:', '- path: reason', '', 'VALIDATION_RUN:', '- command: result', '', 'DOCUMENTATION_IMPACT:', '- updated/none: reason', '- adr_needed: yes/no + reason', '', 'RISKS:', '- ...'].join('\n'),
+    ['SUMMARY:', '- ...', '', 'ACCEPTANCE_CRITERIA_COVERAGE:', '- [x] criterion text — evidence: changed file/test/manual check', '- [ ] criterion text — not covered: reason/blocker', '', 'FILES_CHANGED:', '- path: reason', '', 'VALIDATION_RUN:', '- command: result', '', 'DOCUMENTATION_IMPACT:', '- updated/none: reason', '- adr_needed: yes/no + reason', '', 'RISKS:', '- ...'].join('\n'),
   ].filter((section): section is string => section !== null);
 
   let prompt = sections.join('\n\n');

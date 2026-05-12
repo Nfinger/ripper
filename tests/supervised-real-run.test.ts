@@ -11,6 +11,7 @@ import { resumeRealRun, runRealRun, type RealRunClients } from '../src/supervise
 import { loadSupervisedProfile } from '../src/supervised/profile/loader.js';
 
 const ISSUE: LinearIssue = { id: 'i1', key: 'ENG-1', title: 'Fix the thing', description: 'body', url: 'https://linear/ENG-1', status: 'Todo', labels: [], assigneeId: null, teamKey: 'ENG', projectName: null, comments: [] };
+const REVIEW_APPROVED = ['APPROVED', '', 'ACCEPTANCE_CRITERIA_COVERAGE:', '- [x] Fix the thing — evidence: src/app.ts and unit-tests'].join('\n');
 
 async function setupHome(profileOverrides: { validationYaml?: string; verificationYaml?: string; prBodyMaxChars?: number; requiredChecksYaml?: string; failureStatus?: string | null } = {}): Promise<{ homeDir: string; repo: string }> {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'symphony-real-run-home-'));
@@ -66,7 +67,7 @@ function clients(overrides: Partial<RealRunClients> = {}): RealRunClients {
     },
     codexReadiness: { checkAvailable: vi.fn(async () => ({ ok: true, version: '0.129.0' })) },
     codex: { run: vi.fn(async () => ({ ok: true as const, finalText: 'done', exitCode: 0, timedOut: false as const })) },
-    reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: 'Looks good.\n\nAPPROVED', exitCode: 0, timedOut: false as const })) },
+    reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: REVIEW_APPROVED, exitCode: 0, timedOut: false as const })) },
     validation: { run: vi.fn(async () => ({ command: 'pnpm', args: ['test'], cwd: '/tmp/worktree', exitCode: 0, signal: null, timedOut: false, stdout: 'ok', stderr: '', durationMs: 12 })) },
     ...overrides,
   };
@@ -334,7 +335,7 @@ describe('runRealRun', () => {
     const deps = clients({
       reviewer: { run: vi.fn()
         .mockResolvedValueOnce({ ok: true as const, finalText: 'Blocking issue found\nREQUEST_CHANGES - bug found', exitCode: 0, timedOut: false as const })
-        .mockResolvedValueOnce({ ok: true as const, finalText: 'Fixed now\nAPPROVED', exitCode: 0, timedOut: false as const }) },
+        .mockResolvedValueOnce({ ok: true as const, finalText: REVIEW_APPROVED, exitCode: 0, timedOut: false as const }) },
     });
 
     const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
@@ -365,7 +366,7 @@ describe('runRealRun', () => {
     const deps = clients({
       reviewer: { run: vi.fn()
         .mockResolvedValueOnce({ ok: true as const, finalText: 'REQUEST_CHANGES — blocking issues found.\n- Update API docs.', exitCode: 0, timedOut: false as const })
-        .mockResolvedValueOnce({ ok: true as const, finalText: 'APPROVED — no blocking issues found.\n- API docs updated.', exitCode: 0, timedOut: false as const }) },
+        .mockResolvedValueOnce({ ok: true as const, finalText: `${REVIEW_APPROVED}\n- API docs updated.`, exitCode: 0, timedOut: false as const }) },
     });
 
     const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
@@ -419,6 +420,22 @@ describe('runRealRun', () => {
     const review = await readFile(path.join(result.run.run_dir, 'agent-review.md'), 'utf8');
     expect(review).toContain('[REDACTED_LOCAL_PATH]');
     expect(review).not.toContain('/Users/homebase/secret');
+  });
+
+  it('rejects reviewer approval that omits acceptance criteria coverage', async () => {
+    const { homeDir } = await setupHome();
+    const deps = clients({
+      reviewer: { run: vi.fn(async () => ({ ok: true as const, finalText: 'APPROVED — no blocking issues found.', exitCode: 0, timedOut: false as const })) },
+    });
+
+    const result = await runRealRun({ profileName: 'p', homeDir, issueKey: 'ENG-1', clients: deps });
+
+    expect(result.exitCode).not.toBe(0);
+    const run = await readRunById(homeDir, result.run.run_id);
+    expect(run.status).toBe('failed');
+    expect(run.reason).toBe('code_review_failed');
+    expect(deps.validation.run).not.toHaveBeenCalled();
+    expect(deps.github.createPullRequest).not.toHaveBeenCalled();
   });
 
   it('fails with code_review_failed without double-transitioning when reviewer returns a failed result', async () => {

@@ -389,12 +389,15 @@ function buildAgentReviewPrompt(opts: { issue: LinearIssue; diffSummary: string 
     `Linear issue: ${opts.issue.key} ${opts.issue.title}`,
     '',
     '## Required checks',
+    '- Acceptance criteria coverage: quote every concrete requirement from the Linear issue and map it to committed files, tests, or verification evidence.',
     '- Spec fit: implementation addresses the issue without scope creep.',
     '- Correctness: obvious logic, integration, migration, and edge-case issues.',
     '- Safety: no secrets, unsafe paths, auth leakage, or public-artifact leakage.',
     '- Tests: changed behavior is covered or the gap is clearly justified.',
     '- Documentation impact: verify that specs, ADRs, user flows, API/contract docs, runbooks, and developer docs in the target repo were updated when the committed behavior changed them.',
     '- Living docs policy: approved specs may supersede stale behavior docs, but the implementation must update those docs; hard security/compliance/architecture constraints require explicit authorization to change.',
+    '- Test-only suspicion: if the diff only changes tests but the issue asks to fix, remove, wire, show, display, prevent, support, or expose operator/UI behavior, do not approve unless existing production code already satisfies every criterion and the tests prove that explicitly.',
+    '- UI-state specificity: if the issue names visible states such as pending, succeeded, failed, or unavailable, the diff must implement or verify those exact states.',
     '',
     '## Diff summary',
     opts.diffSummary.trim() || '(No diff summary available.)',
@@ -404,18 +407,30 @@ function buildAgentReviewPrompt(opts: { issue: LinearIssue; diffSummary: string 
     '- APPROVED — no blocking issues found.',
     '- REQUEST_CHANGES — blocking issues found, followed by bullets.',
     '',
+    'If you approve, you must also include this section:',
+    'ACCEPTANCE_CRITERIA_COVERAGE:',
+    '- [x] quoted criterion — evidence: changed file/test/manual check',
+    '',
+    'If any explicit criterion is missing or only partially covered, use REQUEST_CHANGES instead of APPROVED.',
+    '',
   ].join('\n');
 }
 
 function parseReviewVerdict(text: string): 'APPROVED' | 'REQUEST_CHANGES' | 'INVALID' {
   const lines = text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).map((line) => line.toUpperCase());
   const firstLine = lines[0] ?? '';
-  if (firstLine.startsWith('APPROVED')) return 'APPROVED';
-  if (firstLine.startsWith('REQUEST_CHANGES')) return 'REQUEST_CHANGES';
   const lastLine = lines.at(-1) ?? '';
-  if (lastLine.startsWith('APPROVED')) return 'APPROVED';
+  const hasCoverage = hasAcceptanceCriteriaCoverage(text);
+  if (firstLine.startsWith('APPROVED')) return hasCoverage ? 'APPROVED' : 'INVALID';
+  if (firstLine.startsWith('REQUEST_CHANGES')) return 'REQUEST_CHANGES';
+  if (lastLine.startsWith('APPROVED')) return hasCoverage ? 'APPROVED' : 'INVALID';
   if (lastLine.startsWith('REQUEST_CHANGES')) return 'REQUEST_CHANGES';
   return 'INVALID';
+}
+
+function hasAcceptanceCriteriaCoverage(text: string): boolean {
+  const normalized = text.toUpperCase();
+  return normalized.includes('ACCEPTANCE_CRITERIA_COVERAGE:') && /\[[Xx]\]/u.test(text);
 }
 
 async function runReviewRemediationPhase(opts: { homeDir: string; runId: string; profile: SupervisedProfile; issue: LinearIssue; worktreePath: string; codex: CodexPhaseCodexClient; reviewText: string; attempt: number }): Promise<GateResult> {

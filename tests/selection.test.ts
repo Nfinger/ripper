@@ -119,7 +119,39 @@ describe('isEligible', () => {
     expect(isEligible(i, state, config, slots)).toBe(true);
   });
 
+  it('rejects any active state with non-terminal blockers', () => {
+    const state = createInitialState({ poll_interval_ms: 30_000, max_concurrent_agents: 2 });
+    const config = makeConfig({
+      tracker: {
+        kind: 'linear',
+        project_slug: 'market-savvy',
+        active_states: ['Ready for Agent'],
+      },
+    });
+    const slots = computeAvailableSlots(state, config);
+    const i = issue('a', {
+      state: 'Ready for Agent',
+      blocked_by: [{ id: 'x', identifier: 'X-1', state: 'In Progress' }],
+    });
+    expect(isEligible(i, state, config, slots)).toBe(false);
+  });
 
+  it('accepts non-Todo active states with terminal blockers', () => {
+    const state = createInitialState({ poll_interval_ms: 30_000, max_concurrent_agents: 2 });
+    const config = makeConfig({
+      tracker: {
+        kind: 'linear',
+        project_slug: 'market-savvy',
+        active_states: ['Ready for Agent'],
+      },
+    });
+    const slots = computeAvailableSlots(state, config);
+    const i = issue('a', {
+      state: 'Ready for Agent',
+      blocked_by: [{ id: 'x', identifier: 'X-1', state: 'Done' }],
+    });
+    expect(isEligible(i, state, config, slots)).toBe(true);
+  });
 
   it('honors profile-specific assignee and label filters', () => {
     const state = createInitialState({ poll_interval_ms: 30_000, max_concurrent_agents: 2 });

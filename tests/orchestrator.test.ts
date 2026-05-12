@@ -33,6 +33,7 @@ class FakeTracker implements TrackerClient {
   candidates: Issue[][];
   states: MinimalIssueState[][];
   terminal: Array<Pick<Issue, 'id' | 'identifier'>>;
+  stateUpdates: Array<{ issueId: string; stateName: string }> = [];
   candidateCalls = 0;
   stateRefreshCalls = 0;
 
@@ -59,6 +60,10 @@ class FakeTracker implements TrackerClient {
     this.stateRefreshCalls += 1;
     return { ok: true, value: idx >= 0 ? this.states[idx] ?? [] : [] };
   }
+  async update_issue_state(issueId: string, stateName: string): Promise<TrackerResult<{ state: string }>> {
+    this.stateUpdates.push({ issueId, stateName });
+    return { ok: true, value: { state: stateName } };
+  }
 }
 
 function makeConfig(agentOverrides: Record<string, unknown> = {}): ServiceConfig {
@@ -79,6 +84,21 @@ function makeConfig(agentOverrides: Record<string, unknown> = {}): ServiceConfig
     },
     '/x/WORKFLOW.md',
   );
+}
+
+function withLifecycle(config: ServiceConfig): ServiceConfig {
+  return {
+    ...config,
+    tracker: {
+      ...config.tracker,
+      active_states: ['Todo'],
+      lifecycle: {
+        claim_state: 'In Progress',
+        success_state: 'Ready for Review',
+        failure_state: 'Agent Failed',
+      },
+    },
+  };
 }
 
 let tmp: string;
@@ -204,6 +224,37 @@ describe('Orchestrator', () => {
     await orch.shutdown();
   });
 
+  it('keeps claimed lifecycle state running during reconcile without making it a candidate state', async () => {
+    const config = withLifecycle({ ...makeConfig(), workspace: { root: tmp } });
+    expect(config.tracker.active_states).toEqual(['Todo']);
+    const issue = makeIssue();
+    const tracker = new FakeTracker({
+      candidates: [[issue]],
+      states: [[{ id: issue.id, identifier: issue.identifier, state: 'In Progress' }]],
+    });
+    const workspace = new WorkspaceManager({ workspaceRoot: tmp, hooks: config.hooks });
+    let signalRef: AbortSignal | null = null;
+    let resolveWorker: ((v: WorkerExit) => void) | null = null;
+    const workerFn = vi.fn(
+      (args: WorkerArgs) =>
+        new Promise<WorkerExit>((res) => {
+          signalRef = args.signal;
+          resolveWorker = res;
+        }),
+    );
+    const orch = new Orchestrator({ config, tracker, workspace, workerFn });
+
+    await orch.tick();
+    await orch.reconcileRunningIssues();
+
+    expect(signalRef?.aborted).toBe(false);
+    expect(orch.getState().running.has(issue.id)).toBe(true);
+    resolveWorker!({ kind: 'normal', turns: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    await orch.shutdown();
+  });
+
   it('suppresses retries after max_retry_attempts is reached', async () => {
     const config = { ...makeConfig({ max_retry_attempts: 0 }), workspace: { root: tmp } };
     const issue = makeIssue();
@@ -242,6 +293,77 @@ describe('Orchestrator', () => {
     await orch.shutdown();
   });
 
+  it('moves an issue to the configured claim state before starting the worker', async () => {
+    const config = withLifecycle({ ...makeConfig(), workspace: { root: tmp } });
+    const issue = makeIssue();
+    const tracker = new FakeTracker({ candidates: [[issue]] });
+    const workspace = new WorkspaceManager({ workspaceRoot: tmp, hooks: config.hooks });
+    const workerFn = vi.fn(async (): Promise<WorkerExit> => ({ kind: 'normal', turns: 1 }));
+    const orch = new Orchestrator({ config, tracker, workspace, workerFn });
+
+    await orch.tick();
+
+    expect(tracker.stateUpdates[0]).toEqual({ issueId: issue.id, stateName: 'In Progress' });
+    expect(workerFn).toHaveBeenCalledTimes(1);
+    await orch.shutdown();
+  });
+
+  it('does not start the worker when a configured claim transition fails', async () => {
+    const config = withLifecycle({ ...makeConfig(), workspace: { root: tmp } });
+    const issue = makeIssue();
+    const tracker = new FakeTracker({ candidates: [[issue]] });
+    tracker.update_issue_state = vi.fn(async () => ({
+      ok: false,
+      error: { code: 'linear_unknown_payload', message: 'state missing' },
+    }));
+    const workspace = new WorkspaceManager({ workspaceRoot: tmp, hooks: config.hooks });
+    const workerFn = vi.fn(async (): Promise<WorkerExit> => ({ kind: 'normal', turns: 1 }));
+    const orch = new Orchestrator({ config, tracker, workspace, workerFn });
+
+    await orch.tick();
+
+    expect(workerFn).not.toHaveBeenCalled();
+    expect(orch.getState().claimed.has(issue.id)).toBe(false);
+    await orch.shutdown();
+  });
+
+  it('moves an issue to success or failure lifecycle states after final worker exit', async () => {
+    const successConfig = withLifecycle({ ...makeConfig(), workspace: { root: tmp } });
+    const issue = makeIssue();
+    const successTracker = new FakeTracker({ candidates: [[issue]] });
+    const successWorkspace = new WorkspaceManager({ workspaceRoot: tmp, hooks: successConfig.hooks });
+    const successOrch = new Orchestrator({
+      config: successConfig,
+      tracker: successTracker,
+      workspace: successWorkspace,
+      workerFn: vi.fn(async (): Promise<WorkerExit> => ({ kind: 'normal', turns: 1 })),
+    });
+
+    await successOrch.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(successTracker.stateUpdates.map((u) => u.stateName)).toEqual(['In Progress', 'Ready for Review']);
+    await successOrch.shutdown();
+
+    const failureConfig = withLifecycle({ ...makeConfig({ max_retry_attempts: 0 }), workspace: { root: tmp } });
+    const failureTracker = new FakeTracker({ candidates: [[issue]] });
+    const failureWorkspace = new WorkspaceManager({ workspaceRoot: tmp, hooks: failureConfig.hooks });
+    const failureOrch = new Orchestrator({
+      config: failureConfig,
+      tracker: failureTracker,
+      workspace: failureWorkspace,
+      workerFn: vi.fn(async (): Promise<WorkerExit> => ({ kind: 'failed', reason: 'boom', turns: 1 })),
+    });
+
+    await failureOrch.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(failureTracker.stateUpdates.map((u) => u.stateName)).toEqual(['In Progress', 'Agent Failed']);
+    await failureOrch.shutdown();
+  });
 });
+
 
 

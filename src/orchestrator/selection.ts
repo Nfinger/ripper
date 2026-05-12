@@ -1,8 +1,6 @@
 import type { Issue, ServiceConfig } from '../workflow/types.js';
 import type { OrchestratorState } from './state.js';
 
-const TODO_STATE = 'todo';
-
 export interface DispatchSlots {
   global_available: number;
   per_state: Map<string, number>;
@@ -57,11 +55,9 @@ export function isEligible(
     const left = slots.per_state.get(stateLower) ?? 0;
     if (left <= 0) return false;
   }
-  if (stateLower === TODO_STATE) {
-    for (const blocker of issue.blocked_by) {
-      const blockerStateLower = (blocker.state ?? '').toLowerCase();
-      if (!terminalSet.has(blockerStateLower)) return false;
-    }
+  for (const blocker of issue.blocked_by) {
+    const blockerStateLower = (blocker.state ?? '').toLowerCase();
+    if (!terminalSet.has(blockerStateLower)) return false;
   }
   return true;
 }

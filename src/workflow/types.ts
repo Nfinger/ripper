@@ -30,6 +30,15 @@ export interface WorkflowDefinition {
   prompt_template: string;
 }
 
+export interface TrackerLifecycleConfig {
+  /** State to move an issue into after Symphony claims it, before the worker starts. */
+  claim_state: string | null;
+  /** State to move an issue into after a normal worker handoff. */
+  success_state: string | null;
+  /** State to move an issue into after final retry exhaustion/failure. */
+  failure_state: string | null;
+}
+
 export interface TrackerConfig {
   kind: string;
   endpoint: string;
@@ -50,6 +59,8 @@ export interface TrackerConfig {
   assignee_names: string[];
   required_labels: string[];
   excluded_labels: string[];
+  /** Optional daemon-owned tracker lifecycle transitions. */
+  lifecycle: TrackerLifecycleConfig;
 }
 
 export interface PollingConfig {

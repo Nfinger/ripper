@@ -174,6 +174,28 @@ describe('checkCodexChanges', () => {
     expect(summary.policy_findings).toEqual([]);
   });
 
+  it('does not fail provider code for credential identifiers that read from environment variables', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'symphony-change-policy-env-credential-identifiers-'));
+    const worktreePath = await mkdtemp(join(tmpdir(), 'symphony-worktree-'));
+    await writeWorktreeFile(
+      worktreePath,
+      'src/provider.ts',
+      [
+        'interface ProviderConfig { apiKey: string; }',
+        'const apiKey = env.FMP_API_KEY?.trim();',
+        'url.searchParams.set(\'apikey\', config.apiKey);',
+        '',
+      ].join('\n'),
+    );
+    const run = await codexCompletedRun(homeDir);
+
+    const result = await checkCodexChanges({ homeDir, runId: run.run_id, profile: profile(), worktreePath, baseSha: 'b'.repeat(40), git: gitClient({ changedFiles: vi.fn(async () => [{ status: 'A', path: 'src/provider.ts' }]) }) });
+
+    expect(result.ok).toBe(true);
+    const summary = JSON.parse(await readFile(join(run.run_dir, 'diff-summary.json'), 'utf8'));
+    expect(summary.policy_findings).toEqual([]);
+  });
+
   it('fails when commit authors violate configured email policy', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'symphony-change-policy-'));
     const worktreePath = await mkdtemp(join(tmpdir(), 'symphony-worktree-'));

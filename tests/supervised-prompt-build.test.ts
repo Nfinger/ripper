@@ -68,6 +68,19 @@ describe('buildPrompt', () => {
     expect(result.prompt).toContain('DOCUMENTATION_IMPACT:');
   });
 
+  it('requires the implementation agent to plan and report acceptance criteria coverage', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'symphony-prompt-'));
+
+    const result = await buildPrompt({ profile: profile(repo), issue, runId: 'run-1', dryRun: false });
+
+    expect(result.prompt).toContain('## Required Acceptance-Criteria Work Plan');
+    expect(result.prompt).toContain('extract every concrete requirement from the Linear issue into a checklist');
+    expect(result.prompt).toContain('product_behavior');
+    expect(result.prompt).toContain('ui_state');
+    expect(result.prompt).toContain('ACCEPTANCE_CRITERIA_COVERAGE:');
+    expect(result.prompt).toContain('evidence: changed file/test/manual check');
+  });
+
   it('does not inject knowledge files that resolve outside the repo through symlinks', async () => {
     const repo = await mkdtemp(join(tmpdir(), 'symphony-prompt-'));
     const outside = await mkdtemp(join(tmpdir(), 'symphony-prompt-outside-'));

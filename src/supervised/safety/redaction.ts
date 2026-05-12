@@ -59,8 +59,21 @@ function collectRegex(input: string, regex: RegExp, findings: SafetyFinding[], c
   for (const match of input.matchAll(regex)) {
     const index = match.index ?? 0;
     if (code === 'local_absolute_path' && isUrlPathMatch(input, index)) continue;
+    if (code === 'credential_value' && isBenignCredentialIdentifierMatch(match[0])) continue;
     findings.push({ code, message, index });
   }
+}
+
+function isBenignCredentialIdentifierMatch(matchText: string): boolean {
+  const normalized = matchText.trim();
+  const separatorIndex = normalized.search(/[:=]/u);
+  if (separatorIndex === -1) return false;
+
+  const value = normalized.slice(separatorIndex + 1).trim();
+  // Type annotations and environment/config reads name credential-bearing fields
+  // without publishing credential material. Literal strings remain blocked.
+  return /^(?:string|number|boolean|unknown|undefined|null)\b/u.test(value)
+    || /^(?:env|process\.env|config|opts|options)\b/u.test(value);
 }
 
 function redactLocalPaths(input: string): string {

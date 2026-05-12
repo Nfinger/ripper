@@ -118,7 +118,7 @@ export class Orchestrator {
           break;
         }
         if (!isEligible(issue, this.state, this.config, slots)) continue;
-        this.dispatchIssue(issue, null);
+        await this.dispatchIssue(issue, null);
         slots = computeAvailableSlots(this.state, this.config);
       }
       this.notifyObservers();
@@ -142,7 +142,13 @@ export class Orchestrator {
   /**
    * Spec §16.4 — claim, spawn worker, install lifecycle handlers.
    */
-  private dispatchIssue(issue: Issue, attempt: number | null): void {
+  private async dispatchIssue(issue: Issue, attempt: number | null): Promise<void> {
+    const claimState = this.config.tracker.lifecycle.claim_state;
+    if (claimState && issue.state.toLowerCase() !== claimState.toLowerCase()) {
+      const transition = await this.transitionIssueState(issue.id, issue.identifier, claimState, 'claim');
+      if (!transition) return;
+      issue = { ...issue, state: claimState };
+    }
     const abort = new AbortController();
     const startedAt = Date.now();
     const entry: RunningEntry = {
@@ -189,13 +195,13 @@ export class Orchestrator {
     this.state.retry_attempts.delete(issue.id);
 
     promise
-      .then((exit) => this.handleWorkerExit(issue.id, exit))
+      .then((exit) => void this.handleWorkerExit(issue.id, exit))
       .catch((err) => {
         log.error(
           { issue_id: issue.id, err: (err as Error).message },
           'worker promise rejected unexpectedly',
         );
-        this.handleWorkerExit(issue.id, {
+        void this.handleWorkerExit(issue.id, {
           kind: 'failed',
           reason: `worker threw: ${(err as Error).message}`,
           turns: 0,
@@ -232,13 +238,17 @@ export class Orchestrator {
     this.abortIfTokenBudgetExceeded(entry);
   }
 
-  private handleWorkerExit(issueId: string, exit: WorkerExit): void {
+  private async handleWorkerExit(issueId: string, exit: WorkerExit): Promise<void> {
     const entry = this.state.running.get(issueId);
     if (!entry) return;
     this.state.running.delete(issueId);
     rollupTotalsForExit(this.state, entry, Date.now());
 
     if (exit.kind === 'normal') {
+      const successState = this.config.tracker.lifecycle.success_state;
+      if (successState) {
+        await this.transitionIssueState(issueId, entry.identifier, successState, 'success');
+      }
       this.state.completed.add(issueId);
       return;
     }
@@ -249,6 +259,10 @@ export class Orchestrator {
     }
     const nextAttempt = (entry.retry_attempt ?? 0) + 1;
     if (nextAttempt > this.config.agent.max_retry_attempts) {
+      const failureState = this.config.tracker.lifecycle.failure_state;
+      if (failureState) {
+        await this.transitionIssueState(issueId, entry.identifier, failureState, 'failure');
+      }
       this.state.claimed.delete(issueId);
       this.state.completed.add(issueId);
       log.warn(
@@ -351,7 +365,33 @@ export class Orchestrator {
       }
       return;
     }
-    this.dispatchIssue(issue, retry.attempt);
+    await this.dispatchIssue(issue, retry.attempt);
+  }
+
+  private monitorActiveStates(): Set<string> {
+    const active = new Set(this.config.tracker.active_states.map((s) => s.toLowerCase()));
+    const claimState = this.config.tracker.lifecycle.claim_state;
+    if (claimState) active.add(claimState.toLowerCase());
+    return active;
+  }
+
+  private async transitionIssueState(
+    issueId: string,
+    identifier: string,
+    stateName: string,
+    phase: 'claim' | 'success' | 'failure',
+  ): Promise<boolean> {
+    if (!this.tracker.update_issue_state) {
+      log.warn({ issue_id: issueId, identifier, state: stateName, phase }, 'tracker does not support issue state updates');
+      return false;
+    }
+    const res = await this.tracker.update_issue_state(issueId, stateName);
+    if (!res.ok) {
+      log.warn({ issue_id: issueId, identifier, state: stateName, phase, err: res.error }, 'issue state transition failed');
+      return false;
+    }
+    log.info({ issue_id: issueId, identifier, state: res.value.state, phase }, 'issue state transitioned');
+    return true;
   }
 
   /**
@@ -361,13 +401,14 @@ export class Orchestrator {
     this.detectStalls();
     if (this.state.running.size === 0) return;
     const ids = [...this.state.running.keys()];
+    const activeStates = this.monitorActiveStates();
     const refreshed = await this.tracker.fetch_issue_states_by_ids(ids);
     if (!refreshed.ok) {
       log.warn({ err: refreshed.error }, 'state refresh failed (keeping workers)');
       return;
     }
     const terminalSet = new Set(this.config.tracker.terminal_states.map((s) => s.toLowerCase()));
-    const activeSet = new Set(this.config.tracker.active_states.map((s) => s.toLowerCase()));
+    const activeSet = activeStates;
     const seen = new Set<string>();
     for (const item of refreshed.value) {
       seen.add(item.id);

@@ -226,6 +226,59 @@ describe('LinearClient.fetch_issues_by_states', () => {
   });
 });
 
+describe('LinearClient.update_issue_state', () => {
+  it('resolves the workflow state by team/name and updates the issue stateId', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            workflowStates: {
+              nodes: [{ id: 'state-in-progress', name: 'In Progress' }],
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            issueUpdate: {
+              success: true,
+              issue: { id: 'issue-uuid-1', state: { name: 'In Progress' } },
+            },
+          },
+        }),
+      );
+    const c = makeClient(fetchImpl, { teamKey: 'RMA', projectSlug: null });
+
+    const res = await c.update_issue_state('issue-uuid-1', 'In Progress');
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.state).toBe('In Progress');
+    const lookupBody = JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string);
+    expect(lookupBody.variables.filter).toEqual({
+      name: { eq: 'In Progress' },
+      team: { key: { eq: 'RMA' } },
+    });
+    const updateBody = JSON.parse(fetchImpl.mock.calls[1]?.[1]?.body as string);
+    expect(updateBody.variables.input).toEqual({ stateId: 'state-in-progress' });
+    expect(updateBody.variables.id).toBe('issue-uuid-1');
+  });
+
+  it('fails without issuing an update when the named workflow state cannot be resolved', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({ data: { workflowStates: { nodes: [] } } }),
+    );
+    const c = makeClient(fetchImpl, { teamKey: 'RMA', projectSlug: null });
+
+    const res = await c.update_issue_state('issue-uuid-1', 'Missing State');
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('linear_unknown_payload');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('LinearClient.fetch_issue_states_by_ids', () => {
   it('returns minimal issues using the [ID!] variable type', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

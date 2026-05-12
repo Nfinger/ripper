@@ -40,6 +40,8 @@ export interface TrackerClient {
   fetch_candidate_issues(): Promise<TrackerResult<Issue[]>>;
   fetch_issues_by_states(state_names: string[]): Promise<TrackerResult<Pick<Issue, 'id' | 'identifier'>[]>>;
   fetch_issue_states_by_ids(issue_ids: string[]): Promise<TrackerResult<MinimalIssueState[]>>;
+  /** Move an issue to a named workflow state. Optional for read-only trackers. */
+  update_issue_state?(issueId: string, stateName: string): Promise<TrackerResult<{ state: string }>>;
   /**
    * Upload an artifact (video, screenshot, log) to the tracker and surface it
    * on the issue. Optional — trackers without write support return undefined.
