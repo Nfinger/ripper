@@ -140,6 +140,10 @@ export function buildServiceConfig(
     asStringList(trackerRaw.terminal_states) ?? defaultTerminalStatesFor(trackerKind);
   const trackerActiveStates =
     asStringList(trackerRaw.active_states) ?? defaultActiveStatesFor(trackerKind);
+  const trackerAssigneeIds = asStringList(trackerRaw.assignee_ids) ?? [];
+  const trackerAssigneeNames = asStringList(trackerRaw.assignee_names) ?? [];
+  const trackerRequiredLabels = (asStringList(trackerRaw.required_labels) ?? []).map((s) => s.toLowerCase());
+  const trackerExcludedLabels = (asStringList(trackerRaw.excluded_labels) ?? []).map((s) => s.toLowerCase());
   const tracker: TrackerConfig = {
     kind: trackerKind,
     endpoint: trackerEndpoint,
@@ -149,6 +153,10 @@ export function buildServiceConfig(
     project_slug: trackerProjectSlug,
     active_states: trackerActiveStates,
     terminal_states: trackerTerminalStates,
+    assignee_ids: trackerAssigneeIds,
+    assignee_names: trackerAssigneeNames,
+    required_labels: trackerRequiredLabels,
+    excluded_labels: trackerExcludedLabels,
   };
 
   const pollingRaw = asObject(root.polling);

@@ -22,6 +22,8 @@ function issue(id: string, overrides: Partial<Issue> = {}): Issue {
     branch_name: null,
     url: null,
     labels: [],
+    assignee_id: null,
+    assignee_name: null,
     blocked_by: [],
     created_at: null,
     updated_at: null,
@@ -115,6 +117,26 @@ describe('isEligible', () => {
       blocked_by: [{ id: 'x', identifier: 'X-1', state: 'Done' }],
     });
     expect(isEligible(i, state, config, slots)).toBe(true);
+  });
+
+
+
+  it('honors profile-specific assignee and label filters', () => {
+    const state = createInitialState({ poll_interval_ms: 30_000, max_concurrent_agents: 2 });
+    const config = makeConfig({
+      tracker: {
+        kind: 'linear',
+        project_slug: 'market-savvy',
+        assignee_ids: ['user-1'],
+        required_labels: ['agent'],
+        excluded_labels: ['blocked'],
+      },
+    });
+    const slots = computeAvailableSlots(state, config);
+    expect(isEligible(issue('a', { assignee_id: 'user-1', labels: ['agent'] }), state, config, slots)).toBe(true);
+    expect(isEligible(issue('b', { assignee_id: 'user-2', labels: ['agent'] }), state, config, slots)).toBe(false);
+    expect(isEligible(issue('c', { assignee_id: 'user-1', labels: [] }), state, config, slots)).toBe(false);
+    expect(isEligible(issue('d', { assignee_id: 'user-1', labels: ['agent', 'blocked'] }), state, config, slots)).toBe(false);
   });
 
   it('honors per-state concurrency caps', () => {

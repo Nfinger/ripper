@@ -410,6 +410,8 @@ export function normalizeFullIssue(node: unknown): Issue | null {
     branch_name: null,
     url: null,
     labels,
+    assignee_id: null,
+    assignee_name: null,
     blocked_by: blocked,
     created_at: created,
     updated_at: updated,

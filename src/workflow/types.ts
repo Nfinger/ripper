@@ -18,6 +18,8 @@ export interface Issue {
   branch_name: string | null;
   url: string | null;
   labels: string[];
+  assignee_id: string | null;
+  assignee_name: string | null;
   blocked_by: BlockerRef[];
   created_at: string | null;
   updated_at: string | null;
@@ -43,6 +45,11 @@ export interface TrackerConfig {
   project_slug: string | null;
   active_states: string[];
   terminal_states: string[];
+  /** Optional profile-specific candidate filters. These avoid needing custom tracker statuses. */
+  assignee_ids: string[];
+  assignee_names: string[];
+  required_labels: string[];
+  excluded_labels: string[];
 }
 
 export interface PollingConfig {

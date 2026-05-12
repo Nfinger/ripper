@@ -437,6 +437,8 @@ function syntheticRunningForRetry(issueId: string, identifier: string): RunningE
       branch_name: null,
       url: null,
       labels: [],
+      assignee_id: null,
+      assignee_name: null,
       blocked_by: [],
       created_at: null,
       updated_at: null,
