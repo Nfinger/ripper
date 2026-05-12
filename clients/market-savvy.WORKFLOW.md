@@ -1,13 +1,14 @@
 ---
 # Market Savvy — Linear team MarketSavvy (issue prefix MAR), repo Stock-GPT/marketsavvy.
+# Only issues explicitly moved to `Ready for Agent` are picked up here.
 # This file is alphabetically first in the clients/ dir, so its server.port
 # is the one Symphony binds for HTTP. (Daemon binds once across all profiles.)
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   team_key: MAR
-  active_states: [Todo, In Progress]
-  terminal_states: [Done, Cancelled, Canceled, Duplicate, Closed]
+  active_states: [Ready for Agent]
+  terminal_states: [Ready for Review, Done, Cancelled, Canceled, Duplicate, Closed]
 
 polling:
   interval_ms: 60000
@@ -29,6 +30,8 @@ hooks:
 
 agent:
   max_concurrent_agents: 1
+  max_concurrent_agents_by_state:
+    Ready for Agent: 1
   max_turns: 1
   max_retry_attempts: 1
   max_total_tokens_per_daemon: 200000
@@ -61,8 +64,8 @@ You are working on a Market Savvy issue from Linear team **MarketSavvy** (issue 
 - {% if attempt %}Attempt {{ attempt }} — inspect prior workspace state before redoing.{% else %}First attempt.{% endif %}
 - Branch off `origin/main` using the suggested branch name or `nate/{{ issue.identifier | downcase }}-<short-slug>`.
 - Implement, run tests, commit with atomic messages.
-- Handoff: push, open a draft PR linking back to {{ issue.url }} with a summary, move the Linear issue to `Human Review`.
-- Stop on handoff or unresolvable. Don't modify infra, secrets, or anything outside the workspace.
+- Handoff: push, open a draft PR linking back to {{ issue.url }} with a summary and evidence, then move the Linear issue to `Ready for Review`.
+- Stop on handoff or unresolvable. If unresolvable and Linear tools are available, move the issue to `Agent Failed` with a specific failure comment. Don't modify infra, secrets, or anything outside the workspace.
 
 ## Visual proof (REQUIRED before Human Review handoff for any UI-touching change)
 
