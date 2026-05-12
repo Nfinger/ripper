@@ -2,14 +2,15 @@
 # TimeHawk — Jira project TH at https://timehawk.atlassian.net.
 # Repo at github.com:Timehawk-LLC/timehawk requires the nfinger-verveit SSH
 # key, accessed via the `github-verveit` host alias in ~/.ssh/config.
+# Only issues explicitly moved to `Ready for Agent` are picked up here.
 tracker:
   kind: jira
   endpoint: https://timehawk.atlassian.net
   email: $TIMEHAWK_JIRA_EMAIL
   api_key: $TIMEHAWK_JIRA_TOKEN
   project_slug: TH
-  active_states: ["To Do", "In Progress"]
-  terminal_states: ["Done", "Cancelled", "Closed"]
+  active_states: ["Ready for Agent"]
+  terminal_states: ["In Review", "Done", "Cancelled", "Closed"]
 
 polling:
   interval_ms: 60000

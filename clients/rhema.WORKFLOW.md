@@ -1,12 +1,12 @@
 ---
-# Rhema — Linear team MFL, repo voice-health-vbc.
-# Issues with prefix MFL-* are picked up here.
+# Rhema — Linear team RMA, repo voice-health-vbc.
+# Only issues explicitly moved to `Ready for Agent` are picked up here.
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  team_key: MFL
-  active_states: [Todo, In Progress]
-  terminal_states: [Done, Cancelled, Canceled, Duplicate, Closed]
+  team_key: RMA
+  active_states: [Ready for Agent]
+  terminal_states: [Ready for Review, Done, Cancelled, Canceled, Duplicate, Closed]
 
 polling:
   interval_ms: 60000
@@ -29,6 +29,8 @@ hooks:
 
 agent:
   max_concurrent_agents: 1
+  max_concurrent_agents_by_state:
+    Ready for Agent: 1
   max_turns: 1
   max_retry_attempts: 1
   max_total_tokens_per_daemon: 200000
@@ -40,7 +42,7 @@ agent_runtime:
   turn_timeout_ms: 3600000
   stall_timeout_ms: 600000
 ---
-You are working on a Rhema (voice-health-vbc) issue from Linear team **MFL**.
+You are working on a Rhema (voice-health-vbc) issue from Linear team **RMA**.
 
 ## Issue
 - **{{ issue.identifier }} — {{ issue.title }}**
@@ -58,8 +60,8 @@ You are working on a Rhema (voice-health-vbc) issue from Linear team **MFL**.
 - Branch: use the suggested branch above if present; otherwise create `nate/{{ issue.identifier | downcase }}-<short-slug>` off `origin/main`.
 - For research/assessment tickets (ERD remaps, codebase audits, cleanup plans), write the deliverable as markdown into `docs/` and treat the markdown PR as the handoff.
 - For code change tickets, implement, run tests where they exist, commit with atomic messages.
-- Handoff: push the branch, open a draft PR linking back to {{ issue.url }} with a clear summary, and move the Linear issue to `Human Review` (use the `linear_graphql` tool if advertised, otherwise leave a marked TODO line in the PR body).
-- Stop when handed off to Human Review or when the issue can't be done autonomously (and explain why).
+- Handoff: push the branch, open a draft PR linking back to {{ issue.url }} with a clear summary, attach evidence/artifacts, and move the Linear issue to `Ready for Review` (use the `linear_graphql` tool if advertised, otherwise leave a marked TODO line in the PR body and comment with the PR URL).
+- Stop when handed off to Ready for Review or when the issue can't be done autonomously (and explain why; if you can update Linear, move it to `Agent Failed`).
 - Don't modify shared infra, secrets, or anything outside this workspace.
 
 ## Visual proof (REQUIRED before Human Review handoff for any UI-touching change)
