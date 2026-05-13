@@ -85,7 +85,7 @@ Then verify:
 - validation passed
 - a non-draft GitHub PR was opened
 - required GitHub checks passed
-- the tracker issue received the expected handoff
+- the tracker issue moved to the profile's configured success state
 
 ## 7. Recovery
 
